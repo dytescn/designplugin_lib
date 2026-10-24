@@ -1,0 +1,23 @@
+{
+  "name": "plugin_lib",
+  "version": "1.0.0",
+  "description": "design plugin data interface library",
+  "keywords": [
+    "plugin",
+    "design",
+    "library"
+  ],
+  "author": "funxdata",
+  "type": "sys",
+  "license": "MIT",
+  "exports": {
+    "./target/release/plugin_lib.dll": "plugin_lib.dll",
+    "./setup.ts": "setup.ts"
+  },
+  "init": [
+    "./setup.ts"
+  ],
+  "dependencies-sys": {
+    "database": "1.0.2"
+  }
+}
