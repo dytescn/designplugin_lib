@@ -3,7 +3,7 @@
 use crate::utils::cjson::with_input;
 use crate::utils::plugin::{
     self, GetCategoriesReq, GetConfigsReq, GetFunctionsReq, GetInstallReq, GetLibsReq,
-    GetPluginReq, GetVersionsReq,
+    GetPluginReq, GetSkillCategoriesReq, GetSkillReq, GetSkillsReq, GetVersionsReq,
 };
 use std::ffi::{c_char, c_int};
 
@@ -45,4 +45,22 @@ pub extern "C" fn get_libs(json_in: *const c_char, json_out: *mut c_char) -> c_i
 #[unsafe(no_mangle)]
 pub extern "C" fn get_functions(json_in: *const c_char, json_out: *mut c_char) -> c_int {
     with_input::<GetFunctionsReq, _>(json_in, json_out, plugin::get_functions)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn get_skill_categories(
+    json_in: *const c_char,
+    json_out: *mut c_char,
+) -> c_int {
+    with_input::<GetSkillCategoriesReq, _>(json_in, json_out, plugin::get_skill_categories)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn get_skills(json_in: *const c_char, json_out: *mut c_char) -> c_int {
+    with_input::<GetSkillsReq, _>(json_in, json_out, plugin::get_skills)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn get_skill(json_in: *const c_char, json_out: *mut c_char) -> c_int {
+    with_input::<GetSkillReq, _>(json_in, json_out, plugin::get_skill)
 }

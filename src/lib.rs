@@ -7,7 +7,9 @@ pub mod ffi;
 pub mod utils;
 
 pub use crate::ffi::aliases::*;
+pub use crate::ffi::delete::*;
 pub use crate::ffi::get::*;
 pub use crate::ffi::patch::*;
 pub use crate::ffi::post::*;
+pub use crate::ffi::sse::*;
 pub use crate::ffi::update::*;

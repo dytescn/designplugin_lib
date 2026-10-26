@@ -1,0 +1,453 @@
+//! 扫描已安装的设计插件目录，登记到 plugins / plugin_versions / plugin_libs / plugin_functions。
+//!
+//! 目录约定：`./plugins/<name>/` 下放 DLL 与可选的 `mcp.json` + 工具 JSON。
+//! 版本从 `./dytes.lock` 读取；没有 `mcp.json` 时只登记包与库。
+
+use crate::utils::config::PLUGIN_DB;
+use crate::utils::db::{self, quote};
+use crate::utils::error::{AppError, AppResult};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ScanReq {
+    #[serde(default)]
+    pub dir: Option<String>,
+    #[serde(default)]
+    pub persist: Option<bool>,
+}
+
+pub fn scan(req: ScanReq) -> AppResult<Value> {
+    let dir = req.dir.unwrap_or_else(|| "./plugins".to_string());
+    let persist = req.persist.unwrap_or(true);
+    let versions = read_lock_versions("./dytes.lock");
+
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(json!({
+            "found": 0, "added": 0, "updated": 0, "libs": 0, "functions": 0
+        }));
+    };
+
+    let mut packages: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    packages.sort();
+
+    let mut found = 0;
+    let mut added = 0;
+    let mut updated = 0;
+    let mut libs = 0;
+    let mut functions = 0;
+
+    for package in packages {
+        found += 1;
+        let name = package
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let version = versions
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| "0.0.0".to_string());
+
+        if !persist {
+            libs += count_libs(&package);
+            functions += count_functions(&package);
+            continue;
+        }
+
+        let (plugin_uuid, was_added) = upsert_plugin(&name, &package)?;
+        if was_added {
+            added += 1;
+        } else {
+            updated += 1;
+        }
+        upsert_version(&plugin_uuid, &version)?;
+        libs += scan_libs(&plugin_uuid, &package)?;
+        functions += scan_functions(&plugin_uuid, &package)?;
+    }
+
+    Ok(json!({
+        "found": found,
+        "added": added,
+        "updated": updated,
+        "libs": libs,
+        "functions": functions
+    }))
+}
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn as_str(row: &Value, key: &str) -> String {
+    row.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+fn read_lock_versions(path: &str) -> HashMap<String, String> {
+    let mut versions = HashMap::new();
+    let Ok(text) = fs::read_to_string(path) else {
+        return versions;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return versions;
+    };
+    let Some(packages) = value.get("package").and_then(Value::as_array) else {
+        return versions;
+    };
+    for package in packages {
+        let Some(name) = package.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(version) = package.get("version").and_then(Value::as_str) else {
+            continue;
+        };
+        versions.insert(name.to_string(), version.to_string());
+    }
+    versions
+}
+
+fn upsert_plugin(name: &str, package: &Path) -> AppResult<(String, bool)> {
+    let install_path = package.to_string_lossy().to_string();
+    let timestamp = now();
+
+    let existing = db::query(
+        PLUGIN_DB,
+        &format!(
+            "SELECT uuid FROM plugins WHERE name = {} AND deleted_at IS NULL LIMIT 1",
+            quote(name)
+        ),
+    )?;
+
+    if let Some(row) = existing.first() {
+        let uuid = as_str(row, "uuid");
+        db::update(
+            PLUGIN_DB,
+            &format!(
+                "UPDATE plugins SET installed = 1, install_path = {}, updated_at = {timestamp} WHERE uuid = {}",
+                quote(&install_path),
+                quote(&uuid)
+            ),
+        )?;
+        return Ok((uuid, false));
+    }
+
+    let uuid = Uuid::new_v4().to_string();
+    db::execute(
+        PLUGIN_DB,
+        &format!(
+            "INSERT INTO plugins (uuid, name, \"desc\", status, public, created_at, updated_at, \
+             installed, install_path, enabled, plugin_type, target) \
+             VALUES ({}, {}, {}, 'published', 0, {timestamp}, {timestamp}, 1, {}, 1, 'dll', 'common')",
+            quote(&uuid),
+            quote(name),
+            quote(name),
+            quote(&install_path)
+        ),
+    )?;
+
+    Ok((uuid, true))
+}
+
+fn upsert_version(plugin_uuid: &str, version: &str) -> AppResult<()> {
+    let timestamp = now();
+    db::update(
+        PLUGIN_DB,
+        &format!(
+            "UPDATE plugin_versions SET is_latest = 0 WHERE plugin_uuid = {} AND version != {}",
+            quote(plugin_uuid),
+            quote(version)
+        ),
+    )?;
+
+    let existing = db::query(
+        PLUGIN_DB,
+        &format!(
+            "SELECT id FROM plugin_versions WHERE plugin_uuid = {} AND version = {} LIMIT 1",
+            quote(plugin_uuid),
+            quote(version)
+        ),
+    )?;
+
+    if existing.is_empty() {
+        db::execute(
+            PLUGIN_DB,
+            &format!(
+                "INSERT INTO plugin_versions (plugin_uuid, version, status, is_latest, created_at, updated_at) \
+                 VALUES ({}, {}, 'active', 1, {timestamp}, {timestamp})",
+                quote(plugin_uuid),
+                quote(version)
+            ),
+        )?;
+    } else {
+        db::update(
+            PLUGIN_DB,
+            &format!(
+                "UPDATE plugin_versions SET is_latest = 1, status = 'active', updated_at = {timestamp} \
+                 WHERE plugin_uuid = {} AND version = {}",
+                quote(plugin_uuid),
+                quote(version)
+            ),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn count_libs(package: &Path) -> i64 {
+    fs::read_dir(package)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("dll"))
+                        .unwrap_or(false)
+                })
+                .count() as i64
+        })
+        .unwrap_or(0)
+}
+
+fn scan_libs(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
+    let entries = fs::read_dir(package)
+        .map_err(|error| AppError::db(format!("读取插件目录失败: {error}")))?;
+
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_string();
+        let is_dll = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("dll"))
+            .unwrap_or(false);
+        if !is_dll || file_name.is_empty() {
+            continue;
+        }
+
+        let lib_name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&file_name)
+            .to_string();
+        let install_path = path.to_string_lossy().to_string();
+        let libary_path = format!("./libary/{file_name}");
+        let is_registered = Path::new(&libary_path).exists();
+        let file_size = fs::metadata(&path).map(|meta| meta.len() as i64).unwrap_or(0);
+        let file_hash = sha256_file(&path).unwrap_or_default();
+        let timestamp = now();
+
+        let existing = db::query(
+            PLUGIN_DB,
+            &format!(
+                "SELECT uuid FROM plugin_libs WHERE plugin_uuid = {} AND platform = 'windows' AND name = {} LIMIT 1",
+                quote(plugin_uuid),
+                quote(&lib_name)
+            ),
+        )?;
+
+        if let Some(row) = existing.first() {
+            db::update(
+                PLUGIN_DB,
+                &format!(
+                    "UPDATE plugin_libs SET file_name = {}, install_path = {}, libary_path = {}, \
+                     file_hash = {}, file_size = {}, is_local = 1, is_registered = {}, updated_at = {timestamp} \
+                     WHERE uuid = {}",
+                    quote(&file_name),
+                    quote(&install_path),
+                    quote(&libary_path),
+                    quote(&file_hash),
+                    file_size,
+                    i64::from(is_registered),
+                    quote(&as_str(row, "uuid"))
+                ),
+            )?;
+        } else {
+            let lib_uuid = Uuid::new_v4().to_string();
+            db::execute(
+                PLUGIN_DB,
+                &format!(
+                    "INSERT INTO plugin_libs (uuid, plugin_uuid, name, file_name, platform, target, \
+                     install_path, libary_path, file_hash, file_size, is_local, is_registered, \
+                     load_ok, created_at, updated_at) \
+                     VALUES ({}, {}, {}, {}, 'windows', 'common', {}, {}, {}, {}, 1, {}, -1, {timestamp}, {timestamp})",
+                    quote(&lib_uuid),
+                    quote(plugin_uuid),
+                    quote(&lib_name),
+                    quote(&file_name),
+                    quote(&install_path),
+                    quote(&libary_path),
+                    quote(&file_hash),
+                    file_size,
+                    i64::from(is_registered)
+                ),
+            )?;
+        }
+
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+fn count_functions(package: &Path) -> i64 {
+    let path = package.join("mcp.json");
+    let Ok(text) = fs::read_to_string(path) else {
+        return 0;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return 0;
+    };
+    value
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| tools.len() as i64)
+        .unwrap_or(0)
+}
+
+fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
+    let mcp_path = package.join("mcp.json");
+    if !mcp_path.exists() {
+        return Ok(0);
+    }
+
+    let text = fs::read_to_string(&mcp_path)
+        .map_err(|error| AppError::db(format!("读取 mcp.json 失败: {error}")))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| AppError::param(format!("解析 mcp.json 失败: {error}")))?;
+
+    let Some(tools) = value.get("tools").and_then(Value::as_array) else {
+        return Ok(0);
+    };
+
+    let lib_rows = db::query(
+        PLUGIN_DB,
+        &format!(
+            "SELECT uuid, name FROM plugin_libs WHERE plugin_uuid = {} AND platform = 'windows' \
+             ORDER BY id ASC LIMIT 1",
+            quote(plugin_uuid)
+        ),
+    )?;
+    let Some(lib_row) = lib_rows.first() else {
+        return Ok(0);
+    };
+    let lib_uuid = as_str(lib_row, "uuid");
+    let lib_name = as_str(lib_row, "name");
+    let timestamp = now();
+
+    let mut count = 0;
+    for tool in tools {
+        let Some(file_name) = tool.as_str() else {
+            continue;
+        };
+        if file_name.contains('/') || file_name.contains('\\') {
+            continue;
+        }
+
+        let tool_path = package.join(file_name);
+        let Ok(tool_text) = fs::read_to_string(&tool_path) else {
+            continue;
+        };
+        let Ok(tool_value) = serde_json::from_str::<Value>(&tool_text) else {
+            continue;
+        };
+
+        let Some(symbol) = tool_value.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let description = tool_value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(symbol);
+        let params_schema = tool_value
+            .get("inputSchema")
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "{\"type\":\"object\"}".to_string());
+        let return_schema = tool_value
+            .get("outputSchema")
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "{\"type\":\"object\"}".to_string());
+
+        let existing = db::query(
+            PLUGIN_DB,
+            &format!(
+                "SELECT uuid FROM plugin_functions WHERE lib_uuid = {} AND symbol = {} LIMIT 1",
+                quote(&lib_uuid),
+                quote(symbol)
+            ),
+        )?;
+
+        if let Some(row) = existing.first() {
+            db::update(
+                PLUGIN_DB,
+                &format!(
+                    "UPDATE plugin_functions SET lib_name = {}, ffi_symbol = {}, title = {}, \
+                     description = {}, params_schema = {}, return_schema = {}, is_local = 1, \
+                     source = 'mcp.json', updated_at = {timestamp} WHERE uuid = {}",
+                    quote(&lib_name),
+                    quote(symbol),
+                    quote(symbol),
+                    quote(description),
+                    quote(&params_schema),
+                    quote(&return_schema),
+                    quote(&as_str(row, "uuid"))
+                ),
+            )?;
+        } else {
+            let function_uuid = Uuid::new_v4().to_string();
+            db::execute(
+                PLUGIN_DB,
+                &format!(
+                    "INSERT INTO plugin_functions (uuid, lib_uuid, lib_name, symbol, method, \
+                     ffi_symbol, title, description, params_schema, return_schema, side_effects, \
+                     exposed_mcp, is_local, embed_status, source, created_at, updated_at) \
+                     VALUES ({}, {}, {}, {}, 'post', {}, {}, {}, {}, {}, 0, 1, 1, 0, 'mcp.json', \
+                     {timestamp}, {timestamp})",
+                    quote(&function_uuid),
+                    quote(&lib_uuid),
+                    quote(&lib_name),
+                    quote(symbol),
+                    quote(symbol),
+                    quote(symbol),
+                    quote(description),
+                    quote(&params_schema),
+                    quote(&return_schema)
+                ),
+            )?;
+        }
+
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+fn sha256_file(path: &Path) -> AppResult<String> {
+    let bytes = fs::read(path).map_err(|error| AppError::db(format!("读取文件失败: {error}")))?;
+    let digest = Sha256::digest(&bytes);
+    Ok(format!("{digest:x}"))
+}

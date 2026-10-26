@@ -17,6 +17,15 @@ pub use crate::utils::config::plugin_dir;
 const PLUGIN_STATUSES: &[&str] = &["draft", "review", "published", "offline", "deprecated"];
 const INSTALL_STATUSES: &[&str] = &["installing", "installed", "running", "stopped", "broken"];
 const EMBED_STATUSES: &[i64] = &[0, 1, 2, 3];
+const MAX_SKILL_NAME_CHARS: usize = 120;
+const MAX_SKILL_DESCRIPTION_CHARS: usize = 500;
+const MAX_SKILL_CONTENT_CHARS: usize = 8000;
+const SKILL_TEMPLATE_TOKENS: &[&str] = &[
+    "{{base_system_prompt}}",
+    "{{categories}}",
+    "{{skills}}",
+    "{{rules}}",
+];
 
 fn now() -> i64 {
     SystemTime::now()
@@ -59,6 +68,52 @@ fn validate_optional(value: Option<&str>, allowed: &[&str], field: &str) -> AppR
         Some(v) => validate_one_of(v, allowed, field),
         None => Ok(()),
     }
+}
+
+fn validate_skill_fields(
+    name: &str,
+    description: Option<&str>,
+    content: Option<&str>,
+    params_schema: Option<&Value>,
+) -> AppResult<()> {
+    if name.chars().count() > MAX_SKILL_NAME_CHARS {
+        return Err(AppError::param(format!(
+            "name 不能超过 {MAX_SKILL_NAME_CHARS} 个字符"
+        )));
+    }
+    if let Some(description) = description
+        && description.chars().count() > MAX_SKILL_DESCRIPTION_CHARS
+    {
+        return Err(AppError::param(format!(
+            "description 不能超过 {MAX_SKILL_DESCRIPTION_CHARS} 个字符"
+        )));
+    }
+    if let Some(content) = content {
+        if content.chars().count() > MAX_SKILL_CONTENT_CHARS {
+            return Err(AppError::param(format!(
+                "content 不能超过 {MAX_SKILL_CONTENT_CHARS} 个字符"
+            )));
+        }
+        if content
+            .chars()
+            .any(|c| c == '\0' || (c.is_control() && c != '\n' && c != '\r' && c != '\t'))
+        {
+            return Err(AppError::param("content 不能包含控制字符"));
+        }
+        for token in SKILL_TEMPLATE_TOKENS {
+            if content.contains(token) {
+                return Err(AppError::param(format!(
+                    "content 不能包含模板占位符: {token}"
+                )));
+            }
+        }
+    }
+    if let Some(schema) = params_schema
+        && !schema.is_object()
+    {
+        return Err(AppError::param("params_schema 必须是 JSON 对象"));
+    }
+    Ok(())
 }
 
 fn as_i64(row: &Value, key: &str) -> i64 {
@@ -257,6 +312,8 @@ pub struct GetFunctionsReq {
     #[serde(default)]
     pub local: Option<Value>,
     #[serde(default)]
+    pub use_ai: Option<Value>,
+    #[serde(default)]
     pub embed_status: Option<Value>,
     #[serde(default)]
     pub category: Option<String>,
@@ -264,6 +321,31 @@ pub struct GetFunctionsReq {
     pub page: Option<u32>,
     #[serde(default)]
     pub page_size: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GetSkillCategoriesReq {}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GetSkillsReq {
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
+    #[serde(default)]
+    pub ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub enabled: Option<Value>,
+    #[serde(default)]
+    pub with_content: Option<bool>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub page_size: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GetSkillReq {
+    #[serde(default)]
+    pub id: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -508,6 +590,8 @@ pub struct PatchConfigReq {
 pub struct PatchFunctionReq {
     #[serde(default)]
     pub uuid: String,
+    #[serde(default)]
+    pub use_ai: Option<Value>,
     #[serde(default)]
     pub embed_status: Option<Value>,
     #[serde(default)]
@@ -787,6 +871,12 @@ pub fn get_functions(req: GetFunctionsReq) -> AppResult<Value> {
     }
     if let Some(local) = flag(&req.local) {
         conditions.push(format!("is_local = {local}"));
+    }
+    if let Some(use_ai) = flag(&req.use_ai) {
+        if !matches!(use_ai, 0 | 1) {
+            return Err(AppError::param("use_ai must be 0 or 1"));
+        }
+        conditions.push(format!("use_ai = {use_ai}"));
     }
     if let Some(statuses) = int_list(&req.embed_status).filter(|v| !v.is_empty()) {
         if statuses.len() == 1 {
@@ -1378,6 +1468,12 @@ pub fn patch_function(req: PatchFunctionReq) -> AppResult<Value> {
 
     let mut sets = Vec::new();
 
+    if let Some(use_ai) = flag(&req.use_ai) {
+        if !matches!(use_ai, 0 | 1) {
+            return Err(AppError::param("use_ai must be 0 or 1"));
+        }
+        sets.push(format!("use_ai = {use_ai}"));
+    }
     if let Some(status) = flag(&req.embed_status) {
         if !EMBED_STATUSES.contains(&status) {
             return Err(AppError::param(
@@ -1414,6 +1510,413 @@ pub fn patch_function(req: PatchFunctionReq) -> AppResult<Value> {
     Ok(json!({ "updated": true }))
 }
 
+// ---------------------------------------------------------------------------
+// 技能（skills / skill_categories）
+// ---------------------------------------------------------------------------
+
+fn require_skill_category(code: &str) -> AppResult<()> {
+    require_text(code, "category")?;
+    if db::query(
+        PLUGIN_DB,
+        &format!(
+            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
+            quote(code)
+        ),
+    )?
+    .is_empty()
+    {
+        return Err(AppError::param(format!("技能分类不存在: {code}")));
+    }
+    Ok(())
+}
+
+pub fn get_skill_categories(_req: GetSkillCategoriesReq) -> AppResult<Value> {
+    let list = db::query(
+        PLUGIN_DB,
+        "SELECT * FROM skill_categories ORDER BY sort ASC, code ASC",
+    )?;
+    Ok(json!({ "list": list }))
+}
+
+pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
+    let (page, page_size, offset) = page_params(req.page, req.page_size);
+    let mut conditions = Vec::new();
+
+    if let Some(categories) = req.categories.as_ref().filter(|v| !v.is_empty()) {
+        let list = categories
+            .iter()
+            .map(|value| quote(value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("category IN ({list})"));
+    }
+    if let Some(ids) = req.ids.as_ref().filter(|v| !v.is_empty()) {
+        let list = ids
+            .iter()
+            .map(|value| quote(value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("id IN ({list})"));
+    }
+    if let Some(enabled) = flag(&req.enabled) {
+        conditions.push(format!("is_enabled = {enabled}"));
+    }
+
+    let where_sql = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conditions.join(" AND "))
+    };
+    let total = query_i64(
+        PLUGIN_DB,
+        &format!("SELECT COUNT(*) AS total FROM skills{where_sql}"),
+        "total",
+    )?;
+
+    let with_content = req.with_content.unwrap_or(false);
+    let columns = if with_content {
+        "*"
+    } else {
+        "id, name, description, category, trigger, is_system, is_enabled, sort, version, created_at, updated_at"
+    };
+    let mut list = db::query(
+        PLUGIN_DB,
+        &format!(
+            "SELECT {columns} FROM skills{where_sql} \
+             ORDER BY is_system DESC, category ASC, sort ASC, id ASC \
+             LIMIT {page_size} OFFSET {offset}"
+        ),
+    )?;
+    if with_content {
+        for row in &mut list {
+            expand_json_fields(row, &["params_schema"]);
+        }
+    }
+
+    Ok(json!({
+        "list": list,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }))
+}
+
+pub fn get_skill(req: GetSkillReq) -> AppResult<Value> {
+    require_text(&req.id, "id")?;
+    let mut row = require_row(
+        &format!("SELECT * FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
+        &format!("技能不存在: {}", req.id),
+    )?;
+    expand_json_fields(&mut row, &["params_schema"]);
+    Ok(row)
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PostSkillReq {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub params_schema: Option<Value>,
+    #[serde(default)]
+    pub is_system: Option<Value>,
+    #[serde(default)]
+    pub is_enabled: Option<Value>,
+    #[serde(default)]
+    pub sort: Option<i64>,
+    #[serde(default)]
+    pub version: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateSkillReq {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub params_schema: Option<Value>,
+    #[serde(default)]
+    pub is_system: Option<Value>,
+    #[serde(default)]
+    pub is_enabled: Option<Value>,
+    #[serde(default)]
+    pub sort: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DeleteSkillReq {
+    #[serde(default)]
+    pub id: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PostSkillCategoryReq {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub sort: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateSkillCategoryReq {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub sort: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DeleteSkillCategoryReq {
+    #[serde(default)]
+    pub code: String,
+}
+
+pub fn post_skill(req: PostSkillReq) -> AppResult<Value> {
+    require_text(&req.id, "id")?;
+    require_text(&req.name, "name")?;
+    require_skill_category(&req.category)?;
+    validate_skill_fields(
+        &req.name,
+        req.description.as_deref(),
+        req.content.as_deref(),
+        req.params_schema.as_ref(),
+    )?;
+
+    if !db::query(
+        PLUGIN_DB,
+        &format!("SELECT id FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
+    )?
+    .is_empty()
+    {
+        return Err(AppError::conflict(format!("技能 id 已存在: {}", req.id)));
+    }
+
+    let params_schema = req
+        .params_schema
+        .clone()
+        .unwrap_or_else(|| json!({}))
+        .to_string();
+    let sql = format!(
+        "INSERT INTO skills \
+         (id, name, description, category, content, trigger, params_schema, \
+          is_system, is_enabled, sort, version) \
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        quote(&req.id),
+        quote(&req.name),
+        quote_opt(req.description.as_deref()),
+        quote(&req.category),
+        quote_opt(req.content.as_deref()),
+        quote_opt(req.trigger.as_deref()),
+        quote(&params_schema),
+        flag(&req.is_system).unwrap_or(0),
+        flag(&req.is_enabled).unwrap_or(1),
+        req.sort.unwrap_or(0),
+        req.version.unwrap_or(1),
+    );
+    db::execute(PLUGIN_DB, &sql)?;
+    get_skill(GetSkillReq { id: req.id })
+}
+
+pub fn update_skill(req: UpdateSkillReq) -> AppResult<Value> {
+    require_text(&req.id, "id")?;
+    require_row(
+        &format!("SELECT id FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
+        &format!("技能不存在: {}", req.id),
+    )?;
+    validate_skill_fields(
+        req.name.as_deref().unwrap_or(""),
+        req.description.as_deref(),
+        req.content.as_deref(),
+        req.params_schema.as_ref(),
+    )?;
+
+    let mut sets = Vec::new();
+    if let Some(name) = req.name.as_deref() {
+        require_text(name, "name")?;
+        sets.push(format!("name = {}", quote(name)));
+    }
+    if let Some(description) = req.description.as_deref() {
+        sets.push(format!("description = {}", quote(description)));
+    }
+    if let Some(category) = req.category.as_deref() {
+        require_skill_category(category)?;
+        sets.push(format!("category = {}", quote(category)));
+    }
+    if let Some(content) = req.content.as_deref() {
+        sets.push(format!("content = {}", quote(content)));
+    }
+    if let Some(trigger) = req.trigger.as_deref() {
+        sets.push(format!("trigger = {}", quote(trigger)));
+    }
+    if let Some(params_schema) = req.params_schema.as_ref() {
+        sets.push(format!(
+            "params_schema = {}",
+            quote(&params_schema.to_string())
+        ));
+    }
+    if let Some(is_system) = flag(&req.is_system) {
+        sets.push(format!("is_system = {is_system}"));
+    }
+    if let Some(is_enabled) = flag(&req.is_enabled) {
+        sets.push(format!("is_enabled = {is_enabled}"));
+    }
+    if let Some(sort) = req.sort {
+        sets.push(format!("sort = {sort}"));
+    }
+
+    if sets.is_empty() {
+        return Err(AppError::param("no fields to update"));
+    }
+    sets.push("version = version + 1".to_string());
+    sets.push("updated_at = CURRENT_TIMESTAMP".to_string());
+
+    db::update(
+        PLUGIN_DB,
+        &format!(
+            "UPDATE skills SET {} WHERE id = {}",
+            sets.join(", "),
+            quote(&req.id)
+        ),
+    )?;
+    get_skill(GetSkillReq { id: req.id })
+}
+
+pub fn delete_skill(req: DeleteSkillReq) -> AppResult<Value> {
+    require_text(&req.id, "id")?;
+    require_row(
+        &format!("SELECT id FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
+        &format!("技能不存在: {}", req.id),
+    )?;
+    db::delete(
+        PLUGIN_DB,
+        &format!("DELETE FROM skills WHERE id = {}", quote(&req.id)),
+    )?;
+    Ok(json!({ "id": req.id, "deleted": true }))
+}
+
+pub fn post_skill_category(req: PostSkillCategoryReq) -> AppResult<Value> {
+    require_text(&req.code, "code")?;
+    require_text(&req.name, "name")?;
+    if !db::query(
+        PLUGIN_DB,
+        &format!(
+            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
+            quote(&req.code)
+        ),
+    )?
+    .is_empty()
+    {
+        return Err(AppError::conflict(format!(
+            "技能分类已存在: {}",
+            req.code
+        )));
+    }
+    let sql = format!(
+        "INSERT INTO skill_categories (code, name, description, sort) \
+         VALUES ({}, {}, {}, {})",
+        quote(&req.code),
+        quote(&req.name),
+        quote_opt(req.description.as_deref()),
+        req.sort.unwrap_or(0),
+    );
+    db::execute(PLUGIN_DB, &sql)?;
+    Ok(json!({ "code": req.code }))
+}
+
+pub fn update_skill_category(req: UpdateSkillCategoryReq) -> AppResult<Value> {
+    require_text(&req.code, "code")?;
+    require_row(
+        &format!(
+            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
+            quote(&req.code)
+        ),
+        &format!("技能分类不存在: {}", req.code),
+    )?;
+
+    let mut sets = Vec::new();
+    if let Some(name) = req.name.as_deref() {
+        require_text(name, "name")?;
+        sets.push(format!("name = {}", quote(name)));
+    }
+    if let Some(description) = req.description.as_deref() {
+        sets.push(format!("description = {}", quote(description)));
+    }
+    if let Some(sort) = req.sort {
+        sets.push(format!("sort = {sort}"));
+    }
+    if sets.is_empty() {
+        return Err(AppError::param("no fields to update"));
+    }
+    db::update(
+        PLUGIN_DB,
+        &format!(
+            "UPDATE skill_categories SET {} WHERE code = {}",
+            sets.join(", "),
+            quote(&req.code)
+        ),
+    )?;
+    Ok(json!({ "code": req.code }))
+}
+
+pub fn delete_skill_category(req: DeleteSkillCategoryReq) -> AppResult<Value> {
+    require_text(&req.code, "code")?;
+    require_row(
+        &format!(
+            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
+            quote(&req.code)
+        ),
+        &format!("技能分类不存在: {}", req.code),
+    )?;
+    let used = query_i64(
+        PLUGIN_DB,
+        &format!(
+            "SELECT COUNT(*) AS total FROM skills WHERE category = {}",
+            quote(&req.code)
+        ),
+        "total",
+    )?;
+    if used > 0 {
+        return Err(AppError::conflict(format!(
+            "技能分类仍被 {used} 条技能引用: {}",
+            req.code
+        )));
+    }
+    db::delete(
+        PLUGIN_DB,
+        &format!(
+            "DELETE FROM skill_categories WHERE code = {}",
+            quote(&req.code)
+        ),
+    )?;
+    Ok(json!({ "code": req.code, "deleted": true }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1446,5 +1949,30 @@ mod tests {
         assert_eq!(value_text(&json!("x")), "x");
         assert_eq!(value_text(&json!(2)), "2");
         assert_eq!(value_text(&json!(null)), "");
+    }
+
+    #[test]
+    fn skill_requests_parse_with_defaults() {
+        let req: GetSkillsReq = serde_json::from_str("{}").unwrap();
+        assert!(req.categories.is_none());
+        assert!(req.with_content.is_none());
+
+        let skill: PostSkillReq =
+            serde_json::from_str(r#"{"id":"skill-x","name":"X","category":"design"}"#).unwrap();
+        assert_eq!(skill.id, "skill-x");
+        assert_eq!(skill.category, "design");
+        assert!(skill.is_enabled.is_none());
+
+        let delete: DeleteSkillReq = serde_json::from_str(r#"{"id":"skill-x"}"#).unwrap();
+        assert_eq!(delete.id, "skill-x");
+    }
+
+    #[test]
+    fn skill_validation_rejects_long_or_template_content() {
+        let long = "x".repeat(MAX_SKILL_CONTENT_CHARS + 1);
+        assert!(validate_skill_fields("n", None, Some(&long), None).is_err());
+        assert!(validate_skill_fields("n", None, Some("{{rules}}"), None).is_err());
+        assert!(validate_skill_fields("n", None, None, Some(&json!([1]))).is_err());
+        assert!(validate_skill_fields("n", None, Some("ok"), Some(&json!({}))).is_ok());
     }
 }

@@ -3,10 +3,11 @@
 
 use crate::utils::cjson::with_input;
 use crate::utils::plugin::{
-    self, GetCategoriesReq, GetConfigsReq, GetFunctionsReq, GetInstallReq, GetLibsReq,
-    GetPluginReq, GetPluginsReq, GetVersionsReq, PatchConfigReq, PatchFunctionReq,
-    PatchInstallReq, PatchPluginReq, UpdateCategoryReq, UpdateConfigReq, UpdatePluginReq,
-    UpdateVersionReq,
+    self, DeleteSkillCategoryReq, DeleteSkillReq, GetCategoriesReq, GetConfigsReq,
+    GetFunctionsReq, GetInstallReq, GetLibsReq, GetPluginReq, GetPluginsReq,
+    GetSkillCategoriesReq, GetSkillReq, GetSkillsReq, GetVersionsReq, PatchConfigReq,
+    PatchFunctionReq, PatchInstallReq, PatchPluginReq, UpdateCategoryReq, UpdateConfigReq,
+    UpdatePluginReq, UpdateSkillCategoryReq, UpdateSkillReq, UpdateVersionReq,
 };
 use std::ffi::{c_char, c_int};
 
@@ -40,3 +41,24 @@ post_alias!(post_update_plugin, update_plugin, UpdatePluginReq);
 post_alias!(post_update_category, update_category, UpdateCategoryReq);
 post_alias!(post_update_version, update_version, UpdateVersionReq);
 post_alias!(post_update_config, update_config, UpdateConfigReq);
+
+// 技能
+post_alias!(
+    post_get_skill_categories,
+    get_skill_categories,
+    GetSkillCategoriesReq
+);
+post_alias!(post_get_skills, get_skills, GetSkillsReq);
+post_alias!(post_get_skill, get_skill, GetSkillReq);
+post_alias!(post_update_skill, update_skill, UpdateSkillReq);
+post_alias!(
+    post_update_skill_category,
+    update_skill_category,
+    UpdateSkillCategoryReq
+);
+post_alias!(post_delete_skill, delete_skill, DeleteSkillReq);
+post_alias!(
+    post_delete_skill_category,
+    delete_skill_category,
+    DeleteSkillCategoryReq
+);

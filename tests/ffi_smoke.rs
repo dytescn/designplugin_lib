@@ -1,6 +1,6 @@
 //! FFI 冒烟测试：不需要 database.dll，验证参数与响应外壳。
 
-use plugin_lib::get_plugins;
+use plugin_lib::{get_plugins, get_skill_categories, get_skills};
 use std::ffi::{CStr, CString, c_char};
 
 const OUT_LEN: usize = 65_536;
@@ -44,6 +44,24 @@ fn invalid_json_returns_400102() {
 fn valid_input_is_accepted_before_database_access() {
     // page_size 被规范化；数据库不可用时返回数据库错误而不是参数错误。
     let (ret, body) = call(get_plugins, Some(r#"{"page":0,"page_size":1000}"#));
+    assert_eq!(ret, 0);
+    assert!(
+        body.contains("\"code\":200") || body.contains("\"code\":500201"),
+        "{body}"
+    );
+}
+
+#[test]
+fn skill_endpoints_validate_input_before_database_access() {
+    let (ret, body) = call(get_skill_categories, None);
+    assert_eq!(ret, 0);
+    assert!(body.contains("\"code\":400100"), "{body}");
+
+    let (ret, body) = call(get_skills, Some("{not-json"));
+    assert_eq!(ret, 0);
+    assert!(body.contains("\"code\":400102"), "{body}");
+
+    let (ret, body) = call(get_skills, Some(r#"{"enabled":1,"page":1,"page_size":20}"#));
     assert_eq!(ret, 0);
     assert!(
         body.contains("\"code\":200") || body.contains("\"code\":500201"),

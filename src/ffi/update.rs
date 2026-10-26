@@ -2,7 +2,8 @@
 
 use crate::utils::cjson::with_input;
 use crate::utils::plugin::{
-    self, UpdateCategoryReq, UpdateConfigReq, UpdatePluginReq, UpdateVersionReq,
+    self, UpdateCategoryReq, UpdateConfigReq, UpdatePluginReq, UpdateSkillCategoryReq,
+    UpdateSkillReq, UpdateVersionReq,
 };
 use std::ffi::{c_char, c_int};
 
@@ -24,4 +25,18 @@ pub extern "C" fn update_version(json_in: *const c_char, json_out: *mut c_char) 
 #[unsafe(no_mangle)]
 pub extern "C" fn update_config(json_in: *const c_char, json_out: *mut c_char) -> c_int {
     with_input::<UpdateConfigReq, _>(json_in, json_out, plugin::update_config)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn update_skill(json_in: *const c_char, json_out: *mut c_char) -> c_int {
+    with_input::<UpdateSkillReq, _>(json_in, json_out, plugin::update_skill)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn update_skill_category(json_in: *const c_char, json_out: *mut c_char) -> c_int {
+    with_input::<UpdateSkillCategoryReq, _>(
+        json_in,
+        json_out,
+        plugin::update_skill_category,
+    )
 }

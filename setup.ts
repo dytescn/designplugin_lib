@@ -207,6 +207,7 @@ await fetch(API_URL, {
       side_effects    INTEGER DEFAULT 0,
       exposed_mcp     INTEGER DEFAULT 1,
       is_local        INTEGER DEFAULT 0,
+      use_ai          INTEGER DEFAULT 1,
       embed_status    INTEGER DEFAULT 0,
       embed_model     TEXT,
       embed_text_hash TEXT,
@@ -264,6 +265,15 @@ await fetch(API_URL, {
   body: JSON.stringify({
     path: DB_PATH,
     sql: `ALTER TABLE plugins ADD COLUMN target TEXT DEFAULT 'common'`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `ALTER TABLE plugin_functions ADD COLUMN use_ai INTEGER DEFAULT 1`,
   }),
 });
 
@@ -400,7 +410,16 @@ await fetch(API_URL, {
   headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
   body: JSON.stringify({
     path: DB_PATH,
-    sql: `CREATE INDEX IF NOT EXISTS idx_plugin_functions_local ON plugin_functions(is_local, embed_status)`,
+    sql: `DROP INDEX IF EXISTS idx_plugin_functions_local`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `CREATE INDEX IF NOT EXISTS idx_plugin_functions_local ON plugin_functions(is_local, embed_status, use_ai)`,
   }),
 });
 
@@ -429,5 +448,114 @@ await fetch(API_URL, {
   body: JSON.stringify({
     path: DB_PATH,
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_configs_key ON plugin_configs(plugin_uuid, version_id, param_key)`,
+  }),
+});
+
+
+// ========== 4. 技能表（skills / skill_categories） ==========
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `CREATE TABLE IF NOT EXISTS skill_categories (
+      code        TEXT PRIMARY KEY NOT NULL,
+      name        TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      sort        INTEGER NOT NULL DEFAULT 0,
+      created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `CREATE TABLE IF NOT EXISTS skills (
+      id            TEXT PRIMARY KEY NOT NULL,
+      name          TEXT NOT NULL DEFAULT '',
+      description   TEXT NOT NULL DEFAULT '',
+      category      TEXT NOT NULL DEFAULT 'General',
+      content       TEXT NOT NULL DEFAULT '',
+      trigger       TEXT,
+      params_schema TEXT,
+      is_system     INTEGER NOT NULL DEFAULT 0,
+      is_enabled    INTEGER NOT NULL DEFAULT 1,
+      sort          INTEGER NOT NULL DEFAULT 0,
+      version       INTEGER NOT NULL DEFAULT 1,
+      created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `CREATE INDEX IF NOT EXISTS idx_skills_category_sort ON skills(category, sort)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `CREATE INDEX IF NOT EXISTS idx_skills_enabled ON skills(is_enabled)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `INSERT OR IGNORE INTO skill_categories (code, name, sort)
+        VALUES ('general', '通用', 10)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `INSERT OR IGNORE INTO skill_categories (code, name, sort)
+        VALUES ('design', '设计软件', 20)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `INSERT OR IGNORE INTO skill_categories (code, name, sort)
+        VALUES ('material', '素材库', 30)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `INSERT OR IGNORE INTO skill_categories (code, name, sort)
+        VALUES ('plugin', '本地插件', 40)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `INSERT OR IGNORE INTO skill_categories (code, name, sort)
+        VALUES ('safety', '安全与权限', 90)`,
   }),
 });
