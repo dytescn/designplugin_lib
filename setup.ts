@@ -40,7 +40,8 @@ await fetch(API_URL, {
       install_path TEXT,
       enabled      INTEGER DEFAULT 1,
       plugin_type  TEXT DEFAULT 'dll',
-      target       TEXT DEFAULT 'common'
+      target       TEXT DEFAULT 'common',
+      use_ai       INTEGER NOT NULL DEFAULT 0
     )`,
   }),
 });
@@ -265,6 +266,15 @@ await fetch(API_URL, {
   body: JSON.stringify({
     path: DB_PATH,
     sql: `ALTER TABLE plugins ADD COLUMN target TEXT DEFAULT 'common'`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `ALTER TABLE plugins ADD COLUMN use_ai INTEGER NOT NULL DEFAULT 0`,
   }),
 });
 

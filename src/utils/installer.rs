@@ -123,7 +123,13 @@ fn install_inner(name: &str) -> AppResult<(Value, String, String, String)> {
 
     cloud::download_objects(&downloads)?;
 
-    let plugin_uuid = upsert_plugin(name, &remote_version, &package_dir)?;
+    // 保存云端清单，scan 需要读取 use_ai / targets 等字段（G-47）。
+    fs::write(format!("{package_dir}/dytes.json"), &text)
+        .map_err(|error| AppError::db(format!("保存 dytes.json 失败: {error}")))?;
+
+    let use_ai = scanner::use_ai_from_manifest(&manifest);
+    scanner::ensure_use_ai_columns()?;
+    let plugin_uuid = upsert_plugin(name, &remote_version, &package_dir, use_ai)?;
     scanner::scan(ScanReq {
         dir: Some("./plugins".to_string()),
         persist: Some(true),
@@ -413,7 +419,12 @@ fn validate_name(name: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn upsert_plugin(name: &str, version: &str, package_dir: &str) -> AppResult<String> {
+fn upsert_plugin(
+    name: &str,
+    version: &str,
+    package_dir: &str,
+    use_ai: Option<i64>,
+) -> AppResult<String> {
     let timestamp = now();
     let existing = db::query(
         PLUGIN_DB,
@@ -431,20 +442,24 @@ fn upsert_plugin(name: &str, version: &str, package_dir: &str) -> AppResult<Stri
             PLUGIN_DB,
             &format!(
                 "INSERT INTO plugins (uuid, name, \"desc\", status, public, created_at, updated_at, \
-                 installed, install_path, enabled, plugin_type, target) \
-                 VALUES ({}, {}, {}, 'published', 0, {timestamp}, {timestamp}, 0, NULL, 1, 'dll', 'common')",
+                 installed, install_path, enabled, plugin_type, target, use_ai) \
+                 VALUES ({}, {}, {}, 'published', 0, {timestamp}, {timestamp}, 0, NULL, 1, 'dll', 'common', {})",
                 quote(&uuid),
                 quote(name),
-                quote(name)
+                quote(name),
+                use_ai.unwrap_or(0)
             ),
         )?;
         uuid
     };
 
+    let use_ai_sql = use_ai
+        .map(|value| format!(", use_ai = {value}"))
+        .unwrap_or_default();
     db::update(
         PLUGIN_DB,
         &format!(
-            "UPDATE plugins SET installed = 1, install_path = {}, updated_at = {timestamp} WHERE uuid = {}",
+            "UPDATE plugins SET installed = 1, install_path = {}, updated_at = {timestamp}{use_ai_sql} WHERE uuid = {}",
             quote(package_dir),
             quote(&plugin_uuid)
         ),

@@ -27,6 +27,9 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
     let dir = req.dir.unwrap_or_else(|| "./plugins".to_string());
     let persist = req.persist.unwrap_or(true);
     let versions = read_lock_versions("./dytes.lock");
+    if persist {
+        ensure_use_ai_columns()?;
+    }
 
     let Ok(entries) = fs::read_dir(&dir) else {
         return Ok(json!({
@@ -70,7 +73,7 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
             continue;
         }
 
-        let (plugin_uuid, was_added) = upsert_plugin(&name, &package)?;
+        let (plugin_uuid, was_added) = upsert_plugin(&name, &package, read_use_ai(&package))?;
         if was_added {
             added += 1;
         } else {
@@ -79,6 +82,7 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
         upsert_version(&plugin_uuid, &version)?;
         libs += scan_libs(&plugin_uuid, &package)?;
         functions += scan_functions(&plugin_uuid, &package)?;
+        apply_use_ai(&plugin_uuid, read_use_ai(&package))?;
         skills += import_skills(&plugin_uuid, &package)?;
     }
 
@@ -126,7 +130,62 @@ fn read_lock_versions(path: &str) -> HashMap<String, String> {
     versions
 }
 
-fn upsert_plugin(name: &str, package: &Path) -> AppResult<(String, bool)> {
+/// 读取插件包 `dytes.json` 的 `use_ai`；文件缺失或字段非法时返回 `None`。
+fn read_use_ai(package: &Path) -> Option<i64> {
+    let text = fs::read_to_string(package.join("dytes.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    use_ai_from_manifest(&value)
+}
+
+/// 从 `dytes.json` 的 JSON 内容解析 `use_ai`（供安装 / 扫描共用）。
+pub(crate) fn use_ai_from_manifest(value: &Value) -> Option<i64> {
+    match value.get("use_ai") {
+        Some(Value::Bool(value)) => Some(i64::from(*value)),
+        Some(Value::Number(value)) => Some(value.as_i64().unwrap_or(0).clamp(0, 1)),
+        Some(Value::String(value)) if value == "true" || value == "1" => Some(1),
+        Some(Value::String(value)) if value == "false" || value == "0" => Some(0),
+        _ => None,
+    }
+}
+
+/// 旧库可能没有 `use_ai` 列；scan 前补列，避免 UPDATE / INSERT 失败。
+pub(crate) fn ensure_use_ai_columns() -> AppResult<()> {
+    ensure_column("plugins", "use_ai", "INTEGER NOT NULL DEFAULT 0")?;
+    ensure_column("plugin_functions", "use_ai", "INTEGER DEFAULT 1")?;
+    Ok(())
+}
+
+fn ensure_column(table: &str, column: &str, ddl: &str) -> AppResult<()> {
+    let rows = db::query(PLUGIN_DB, &format!("PRAGMA table_info({table})"))?;
+    let exists = rows
+        .iter()
+        .any(|row| row.get("name").and_then(Value::as_str) == Some(column));
+    if !exists {
+        db::update(
+            PLUGIN_DB,
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
+        )?;
+    }
+    Ok(())
+}
+
+/// 把插件级 `use_ai` 强制写入该插件的全部能力函数。
+fn apply_use_ai(plugin_uuid: &str, use_ai: Option<i64>) -> AppResult<()> {
+    let Some(use_ai) = use_ai else {
+        return Ok(());
+    };
+    db::update(
+        PLUGIN_DB,
+        &format!(
+            "UPDATE plugin_functions SET use_ai = {use_ai} \
+             WHERE lib_uuid IN (SELECT uuid FROM plugin_libs WHERE plugin_uuid = {})",
+            quote(plugin_uuid)
+        ),
+    )?;
+    Ok(())
+}
+
+fn upsert_plugin(name: &str, package: &Path, use_ai: Option<i64>) -> AppResult<(String, bool)> {
     let install_path = package.to_string_lossy().to_string();
     let timestamp = now();
 
@@ -140,10 +199,13 @@ fn upsert_plugin(name: &str, package: &Path) -> AppResult<(String, bool)> {
 
     if let Some(row) = existing.first() {
         let uuid = as_str(row, "uuid");
+        let use_ai_sql = use_ai
+            .map(|value| format!(", use_ai = {value}"))
+            .unwrap_or_default();
         db::update(
             PLUGIN_DB,
             &format!(
-                "UPDATE plugins SET installed = 1, install_path = {}, updated_at = {timestamp} WHERE uuid = {}",
+                "UPDATE plugins SET installed = 1, install_path = {}, updated_at = {timestamp}{use_ai_sql} WHERE uuid = {}",
                 quote(&install_path),
                 quote(&uuid)
             ),
@@ -156,12 +218,13 @@ fn upsert_plugin(name: &str, package: &Path) -> AppResult<(String, bool)> {
         PLUGIN_DB,
         &format!(
             "INSERT INTO plugins (uuid, name, \"desc\", status, public, created_at, updated_at, \
-             installed, install_path, enabled, plugin_type, target) \
-             VALUES ({}, {}, {}, 'published', 0, {timestamp}, {timestamp}, 1, {}, 1, 'dll', 'common')",
+             installed, install_path, enabled, plugin_type, target, use_ai) \
+             VALUES ({}, {}, {}, 'published', 0, {timestamp}, {timestamp}, 1, {}, 1, 'dll', 'common', {})",
             quote(&uuid),
             quote(name),
             quote(name),
-            quote(&install_path)
+            quote(&install_path),
+            use_ai.unwrap_or(0)
         ),
     )?;
 
@@ -574,4 +637,21 @@ fn sha256_file(path: &Path) -> AppResult<String> {
     let bytes = fs::read(path).map_err(|error| AppError::db(format!("读取文件失败: {error}")))?;
     let digest = Sha256::digest(&bytes);
     Ok(format!("{digest:x}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn use_ai_from_manifest_accepts_supported_shapes() {
+        assert_eq!(use_ai_from_manifest(&json!({"use_ai": true})), Some(1));
+        assert_eq!(use_ai_from_manifest(&json!({"use_ai": false})), Some(0));
+        assert_eq!(use_ai_from_manifest(&json!({"use_ai": 1})), Some(1));
+        assert_eq!(use_ai_from_manifest(&json!({"use_ai": 0})), Some(0));
+        assert_eq!(use_ai_from_manifest(&json!({"use_ai": "true"})), Some(1));
+        assert_eq!(use_ai_from_manifest(&json!({"use_ai": "0"})), Some(0));
+        assert_eq!(use_ai_from_manifest(&json!({})), None);
+        assert_eq!(use_ai_from_manifest(&json!({"use_ai": "maybe"})), None);
+    }
 }
