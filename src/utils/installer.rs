@@ -1,8 +1,10 @@
 //! 设计插件安装 / 卸载。
 //!
 //! 安装：从 `design_plugins/<name>/dytes.json` 读取清单，下载 exports 到 `./plugins/<name>/`，
-//! 复制 DLL 到 `./libary/`，然后交给 `scanner::scan` 登记数据库。
-//! 卸载：删除安装目录与 `libary/` 下的 DLL，删除库/函数记录，保留插件与版本记录（`installed = 0`）。
+//! 然后交给 `scanner::scan` 登记数据库。cyctron 直接加载 `./plugins/<name>/` 下的动态库，
+//! 不再复制到 `./libary/`（该目录只放 sys 能力库，例如 `plugin_lib` 自身）。
+//! 卸载：删除安装目录；旧安装遗留在 `./libary/` 的同名副本仅在内容一致时清理。
+//! 库/函数记录会被删除，插件与版本记录保留（`installed = 0`）。
 
 use crate::utils::cloud;
 use crate::utils::config::PLUGIN_DB;
@@ -121,18 +123,6 @@ fn install_inner(name: &str) -> AppResult<(Value, String, String, String)> {
 
     cloud::download_objects(&downloads)?;
 
-    fs::create_dir_all("./libary")
-        .map_err(|error| AppError::db(format!("创建 libary 失败: {error}")))?;
-    for file_name in &files {
-        if file_name.to_ascii_lowercase().ends_with(".dll") {
-            fs::copy(
-                format!("{package_dir}/{file_name}"),
-                format!("./libary/{file_name}"),
-            )
-            .map_err(|error| AppError::db(format!("复制 {file_name} 到 libary 失败: {error}")))?;
-        }
-    }
-
     let plugin_uuid = upsert_plugin(name, &remote_version, &package_dir)?;
     scanner::scan(ScanReq {
         dir: Some("./plugins".to_string()),
@@ -168,15 +158,12 @@ pub fn uninstall(req: UninstallReq) -> AppResult<Value> {
     let libs = db::query(
         PLUGIN_DB,
         &format!(
-            "SELECT file_name FROM plugin_libs WHERE plugin_uuid = {}",
+            "SELECT file_name, install_path FROM plugin_libs WHERE plugin_uuid = {}",
             quote(&plugin_uuid)
         ),
     )?;
     for lib in &libs {
-        let file_name = as_str(lib, "file_name");
-        if !file_name.is_empty() && !file_name.contains('/') && !file_name.contains('\\') {
-            let _ = fs::remove_file(format!("./libary/{file_name}"));
-        }
+        remove_legacy_libary_copy(&as_str(lib, "file_name"), &as_str(lib, "install_path"));
     }
 
     let package_dir = format!("./plugins/{name}");
@@ -257,15 +244,12 @@ pub fn delete(req: UninstallReq) -> AppResult<Value> {
     let libs = db::query(
         PLUGIN_DB,
         &format!(
-            "SELECT file_name FROM plugin_libs WHERE plugin_uuid = {}",
+            "SELECT file_name, install_path FROM plugin_libs WHERE plugin_uuid = {}",
             quote(&plugin_uuid)
         ),
     )?;
     for lib in &libs {
-        let file_name = as_str(lib, "file_name");
-        if !file_name.is_empty() && !file_name.contains('/') && !file_name.contains('\\') {
-            let _ = fs::remove_file(format!("./libary/{file_name}"));
-        }
+        remove_legacy_libary_copy(&as_str(lib, "file_name"), &as_str(lib, "install_path"));
     }
     let package_dir = format!("./plugins/{name}");
     if Path::new(&package_dir).exists() {
@@ -328,6 +312,27 @@ pub fn delete(req: UninstallReq) -> AppResult<Value> {
         "deleted": true,
         "function_uuids": function_uuids,
     }))
+}
+
+/// 清理旧安装复制到 `./libary/` 的副本。
+///
+/// 只有 legacy 文件与插件目录中的 DLL 内容完全一致时才删除，避免误删同名
+/// 的系统能力库（例如 `database.dll`）。
+fn remove_legacy_libary_copy(file_name: &str, install_path: &str) {
+    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') {
+        return;
+    }
+    let legacy = format!("./libary/{file_name}");
+    remove_file_if_identical(Path::new(&legacy), Path::new(install_path));
+}
+
+fn remove_file_if_identical(legacy: &Path, installed: &Path) {
+    let (Ok(legacy_bytes), Ok(installed_bytes)) = (fs::read(legacy), fs::read(installed)) else {
+        return;
+    };
+    if legacy_bytes == installed_bytes {
+        let _ = fs::remove_file(legacy);
+    }
 }
 
 fn record_install(
@@ -503,4 +508,35 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_libary_copy_removed_only_when_identical() {
+        let dir = std::env::temp_dir().join(format!("plugin_lib-legacy-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let installed = dir.join("plugin.dll");
+        let legacy = dir.join("legacy.dll");
+
+        fs::write(&installed, b"same-bytes").expect("write installed");
+        fs::write(&legacy, b"same-bytes").expect("write legacy");
+        remove_file_if_identical(&legacy, &installed);
+        assert!(!legacy.exists(), "identical legacy copy should be removed");
+
+        fs::write(&legacy, b"different-bytes").expect("write legacy");
+        remove_file_if_identical(&legacy, &installed);
+        assert!(legacy.exists(), "different file must be kept");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_name_with_separator_is_ignored() {
+        remove_legacy_libary_copy("../database.dll", "./plugins/x/x.dll");
+        remove_legacy_libary_copy("sub/dll.dll", "./plugins/x/x.dll");
+        assert!(!Path::new("./libary/sub/dll.dll").exists());
+    }
 }

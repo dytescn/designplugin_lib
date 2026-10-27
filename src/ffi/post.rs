@@ -63,7 +63,7 @@ pub extern "C" fn post_install(json_in: *const c_char, json_out: *mut c_char) ->
     with_input::<InstallReq, _>(json_in, json_out, installer::install)
 }
 
-/// 卸载设计插件（删除安装目录、libary 与库/函数记录）。
+/// 卸载设计插件（删除安装目录、库/函数记录，并清理内容一致的旧 libary 副本）。
 #[unsafe(no_mangle)]
 pub extern "C" fn post_uninstall(json_in: *const c_char, json_out: *mut c_char) -> c_int {
     with_input::<UninstallReq, _>(json_in, json_out, installer::uninstall)

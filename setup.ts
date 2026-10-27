@@ -515,6 +515,40 @@ await fetch(API_URL, {
   headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
   body: JSON.stringify({
     path: DB_PATH,
+    sql: `CREATE TABLE IF NOT EXISTS plugin_skills (
+      plugin_uuid TEXT NOT NULL,
+      skill_id    TEXT NOT NULL,
+      version     INTEGER NOT NULL DEFAULT 1,
+      is_owned    INTEGER NOT NULL DEFAULT 1,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(plugin_uuid, skill_id)
+    )`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `CREATE INDEX IF NOT EXISTS idx_plugin_skills_plugin ON plugin_skills(plugin_uuid)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
+    sql: `CREATE INDEX IF NOT EXISTS idx_plugin_skills_skill ON plugin_skills(skill_id)`,
+  }),
+});
+
+await fetch(API_URL, {
+  method: "POST",
+  headers: { "Content-Type": "application/libary", "FFI-Symbol": "db_update" },
+  body: JSON.stringify({
+    path: DB_PATH,
     sql: `INSERT OR IGNORE INTO skill_categories (code, name, sort)
         VALUES ('general', '通用', 10)`,
   }),

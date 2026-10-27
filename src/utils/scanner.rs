@@ -30,7 +30,7 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
 
     let Ok(entries) = fs::read_dir(&dir) else {
         return Ok(json!({
-            "found": 0, "added": 0, "updated": 0, "libs": 0, "functions": 0
+            "found": 0, "added": 0, "updated": 0, "libs": 0, "functions": 0, "skills": 0
         }));
     };
 
@@ -46,6 +46,7 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
     let mut updated = 0;
     let mut libs = 0;
     let mut functions = 0;
+    let mut skills = 0;
 
     for package in packages {
         found += 1;
@@ -78,6 +79,7 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
         upsert_version(&plugin_uuid, &version)?;
         libs += scan_libs(&plugin_uuid, &package)?;
         functions += scan_functions(&plugin_uuid, &package)?;
+        skills += import_skills(&plugin_uuid, &package)?;
     }
 
     Ok(json!({
@@ -85,7 +87,8 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
         "added": added,
         "updated": updated,
         "libs": libs,
-        "functions": functions
+        "functions": functions,
+        "skills": skills
     }))
 }
 
@@ -255,8 +258,10 @@ fn scan_libs(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
             .unwrap_or(&file_name)
             .to_string();
         let install_path = path.to_string_lossy().to_string();
-        let libary_path = format!("./libary/{file_name}");
-        let is_registered = Path::new(&libary_path).exists();
+        // 设计插件直接从 `./plugins/<name>/` 加载；`libary_path` 列保留兼容，
+        // 现在记录实际加载路径，is_registered 以该文件是否存在为准。
+        let load_path = install_path.clone();
+        let is_registered = Path::new(&install_path).exists();
         let file_size = fs::metadata(&path).map(|meta| meta.len() as i64).unwrap_or(0);
         let file_hash = sha256_file(&path).unwrap_or_default();
         let timestamp = now();
@@ -279,7 +284,7 @@ fn scan_libs(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                      WHERE uuid = {}",
                     quote(&file_name),
                     quote(&install_path),
-                    quote(&libary_path),
+                    quote(&load_path),
                     quote(&file_hash),
                     file_size,
                     i64::from(is_registered),
@@ -300,7 +305,7 @@ fn scan_libs(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                     quote(&lib_name),
                     quote(&file_name),
                     quote(&install_path),
-                    quote(&libary_path),
+                    quote(&load_path),
                     quote(&file_hash),
                     file_size,
                     i64::from(is_registered)
@@ -438,6 +443,125 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                     quote(&return_schema)
                 ),
             )?;
+        }
+
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+/// 导入插件随包 `skills.json`：索引 / 正文写 `skills`，归属写 `plugin_skills`。
+///
+/// 该步骤幂等：重复 scan 会更新技能内容并递增 `version`，不会重复插入归属行。
+fn import_skills(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
+    let path = package.join("skills.json");
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let text = fs::read_to_string(&path)
+        .map_err(|error| AppError::db(format!("读取 skills.json 失败: {error}")))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| AppError::param(format!("解析 skills.json 失败: {error}")))?;
+    let Some(skills) = value.get("skills").and_then(Value::as_array) else {
+        return Ok(0);
+    };
+
+    let mut count = 0;
+    for skill in skills {
+        let id = skill
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let content = skill
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if content.trim().is_empty() {
+            continue;
+        }
+
+        let name = skill.get("name").and_then(Value::as_str).unwrap_or(&id);
+        let description = skill
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let category = skill
+            .get("category")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("plugin");
+        let trigger = skill.get("trigger").and_then(Value::as_str).unwrap_or("");
+        let params_schema = skill
+            .get("params_schema")
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "{}".to_string());
+        let is_system = skill
+            .get("is_system")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let is_enabled = skill
+            .get("is_enabled")
+            .and_then(Value::as_i64)
+            .unwrap_or(1);
+        let sort = skill.get("sort").and_then(Value::as_i64).unwrap_or(0);
+
+        db::execute(
+            PLUGIN_DB,
+            &format!(
+                "INSERT OR IGNORE INTO skill_categories (code, name, sort) VALUES ({}, {}, 100)",
+                quote(category),
+                quote(category)
+            ),
+        )?;
+
+        db::execute(
+            PLUGIN_DB,
+            &format!(
+                "INSERT INTO skills (id, name, description, category, content, trigger, \
+                 params_schema, is_system, is_enabled, sort, version, created_at, updated_at) \
+                 VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 1, datetime('now'), datetime('now')) \
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, \
+                 description = excluded.description, category = excluded.category, \
+                 content = excluded.content, trigger = excluded.trigger, \
+                 params_schema = excluded.params_schema, is_system = excluded.is_system, \
+                 is_enabled = excluded.is_enabled, sort = excluded.sort, \
+                 version = skills.version + 1, updated_at = datetime('now')",
+                quote(&id),
+                quote(name),
+                quote(description),
+                quote(category),
+                quote(content),
+                quote(trigger),
+                quote(&params_schema),
+                is_system,
+                is_enabled,
+                sort
+            ),
+        )?;
+
+        db::execute(
+            PLUGIN_DB,
+            &format!(
+                "INSERT INTO plugin_skills (plugin_uuid, skill_id, version, is_owned, created_at) \
+                 VALUES ({}, {}, 1, 1, datetime('now')) \
+                 ON CONFLICT(plugin_uuid, skill_id) DO UPDATE SET version = excluded.version, \
+                 is_owned = excluded.is_owned",
+                quote(plugin_uuid),
+                quote(&id)
+            ),
+        )?;
+
+        // 完整内容写 designdb（best-effort，缺库时不影响安装 / 扫描）。
+        if let Err(error) = crate::utils::designdb::upsert_skill(skill) {
+            eprintln!("[scan] 写 designdb skills 失败 ({id}): {error}");
         }
 
         count += 1;

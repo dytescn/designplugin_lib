@@ -4,6 +4,7 @@
 
 - 对 `plugin_ui` 提供插件、分类、版本、配置、安装状态、动态库与 FFI 能力的 `get / post / update / patch`；
 - 通过 `dlopen` 加载 `./libary/database.dll` 读写 `./database/plugins.db`（不直接链接 SQLite）；
+- 技能完整内容通过 `./libary/libdesigndb.dll` 写入 `./designdb/skills`（best-effort，缺库不影响安装/扫描）；
 - 不负责设计软件的发现 / 启动 / 运行状态（由 `designsoft` 独立负责）；
 - 不提供向量表与语义检索（归 `chatllm`），只提供能力清单与向量化状态。
 
@@ -21,6 +22,10 @@ cargo clippy --all-targets
 ```
 
 产物：`target/release/plugin_lib.dll`，由 `update.exe` 安装到 `libary/plugin_lib.dll`。
+
+> `designplugin_lib` 本身是 **sys** 包，固定位于 `libary/`；
+> 它安装的**设计插件**动态库统一落到 `./plugins/<name>/`，cyctron 优先从该目录加载，
+> 不再复制到 `./libary/`。
 
 ## 初始化
 

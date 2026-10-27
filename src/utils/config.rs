@@ -108,13 +108,13 @@ pub fn set_user_config(
     )
 }
 
-/// 插件安装根目录，缺省 `./storage/plugins`。
+/// 插件安装根目录，缺省 `./plugins`。
 pub fn plugin_dir() -> String {
     get_setting("plugin_dir")
         .ok()
         .flatten()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "./storage/plugins".to_string())
+        .unwrap_or_else(|| "./plugins".to_string())
 }
 
 #[cfg(test)]

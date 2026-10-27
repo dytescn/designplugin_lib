@@ -333,6 +333,8 @@ pub struct GetSkillsReq {
     #[serde(default)]
     pub ids: Option<Vec<String>>,
     #[serde(default)]
+    pub plugin_uuid: Option<String>,
+    #[serde(default)]
     pub enabled: Option<Value>,
     #[serde(default)]
     pub with_content: Option<bool>,
@@ -1558,6 +1560,17 @@ pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
             .join(", ");
         conditions.push(format!("id IN ({list})"));
     }
+    if let Some(plugin_uuid) = req
+        .plugin_uuid
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        conditions.push(format!(
+            "id IN (SELECT skill_id FROM plugin_skills WHERE plugin_uuid = {})",
+            quote(plugin_uuid)
+        ));
+    }
     if let Some(enabled) = flag(&req.enabled) {
         conditions.push(format!("is_enabled = {enabled}"));
     }
@@ -1590,6 +1603,20 @@ pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
     if with_content {
         for row in &mut list {
             expand_json_fields(row, &["params_schema"]);
+            // 完整内容以 designdb 为准；缺失时回退 skills 表。
+            if let Some(id) = row
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                && let Ok(Some(doc)) = crate::utils::designdb::get_skill_doc(&id)
+                && let Some(obj) = row.as_object_mut()
+            {
+                for key in ["content", "trigger", "params_schema"] {
+                    if let Some(value) = doc.get(key) {
+                        obj.insert(key.to_string(), value.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -1956,6 +1983,12 @@ mod tests {
         let req: GetSkillsReq = serde_json::from_str("{}").unwrap();
         assert!(req.categories.is_none());
         assert!(req.with_content.is_none());
+        assert!(req.plugin_uuid.is_none());
+
+        let req: GetSkillsReq =
+            serde_json::from_str(r#"{"plugin_uuid":"plugin-1","with_content":true}"#).unwrap();
+        assert_eq!(req.plugin_uuid.as_deref(), Some("plugin-1"));
+        assert_eq!(req.with_content, Some(true));
 
         let skill: PostSkillReq =
             serde_json::from_str(r#"{"id":"skill-x","name":"X","category":"design"}"#).unwrap();

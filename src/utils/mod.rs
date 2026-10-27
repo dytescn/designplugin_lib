@@ -2,6 +2,7 @@ pub mod cjson;
 pub mod cloud;
 pub mod config;
 pub mod db;
+pub mod designdb;
 pub mod error;
 pub mod installer;
 pub mod plugin;
