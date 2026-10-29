@@ -21,7 +21,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-产物：`target/release/plugin_lib.dll`，由 `update.exe` 安装到 `libary/plugin_lib.dll`。
+产物：`target/release/plugin_lib.dll`，由 `dytes update` 安装到 `libary/plugin_lib.dll`。
 
 > `designplugin_lib` 本身是 **sys** 包，固定位于 `libary/`；
 > 它安装的**设计插件**动态库统一落到 `./plugins/<name>/`，cyctron 优先从该目录加载，
@@ -36,7 +36,7 @@ deno run -A setup.ts
 前置：`database` 服务已在 `http://127.0.0.1:44944` 运行。脚本幂等，只初始化 `plugins.db`
 （建表 / 补列 / 建索引）；`info.db` 的 `setting` 表由 `setting_ui` 创建，`plugin_lib` 只读写。
 
-- `update.exe` 安装 sys 包后会自动执行 `libary/plugin_lib/setup.ts`，并把云端 `dytes.json`
+- `dytes update` 安装 sys 包后会自动执行 `libary/plugin_lib/setup.ts`，并把包内 `dytes.json`
   与 `setup.ts` 保存到 `libary/plugin_lib/`；
 - 也可手动执行 `deno run -A setup.ts`。
 

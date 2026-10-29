@@ -6,7 +6,7 @@
 //! 卸载：删除安装目录；旧安装遗留在 `./libary/` 的同名副本仅在内容一致时清理。
 //! 库/函数记录会被删除，插件与版本记录保留（`installed = 0`）。
 
-use crate::utils::cloud;
+use crate::utils::dytes;
 use crate::utils::config::PLUGIN_DB;
 use crate::utils::db::{self, quote, quote_opt};
 use crate::utils::error::{AppError, AppResult};
@@ -43,7 +43,7 @@ pub fn install(req: InstallReq) -> AppResult<Value> {
     validate_name(&name)?;
     let started_at = now();
 
-    match install_inner(&name) {
+    match install_inner(&name, req.version.as_deref()) {
         Ok((value, plugin_uuid, version, install_path)) => {
             record_install(
                 &plugin_uuid,
@@ -73,61 +73,44 @@ pub fn install(req: InstallReq) -> AppResult<Value> {
     }
 }
 
-fn install_inner(name: &str) -> AppResult<(Value, String, String, String)> {
-    let manifest_key = format!("design_plugins/{name}/dytes.json");
-    let text = cloud::fetch_text(&manifest_key)?;
-    let manifest: Value = serde_json::from_str(&text)
-        .map_err(|error| AppError::param(format!("解析 {manifest_key} 失败: {error}")))?;
+fn install_inner(
+    name: &str,
+    version: Option<&str>,
+) -> AppResult<(Value, String, String, String)> {
+    let root = std::env::current_dir()
+        .map_err(|error| AppError::file(format!("读取当前目录失败: {error}")))?;
+    let target = match version.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(version) => format!("{name}@{version}"),
+        None => name.to_string(),
+    };
+    let root_arg = root.to_string_lossy().to_string();
 
-    let remote_version = manifest
+    // 下载与安装统一交给 dytes，本库不再直接访问 S3。
+    let output = dytes::run(
+        &root,
+        &["install", "plugin", &target, "--dir", &root_arg, "--json"],
+    )?;
+    if output.code != Some(0) {
+        return Err(AppError::file(format!(
+            "dytes install {target} 失败: {}",
+            output.stderr.trim()
+        )));
+    }
+
+    let result = dytes::parse_json(&output)?;
+    let remote_version = result
         .get("version")
         .and_then(Value::as_str)
         .unwrap_or("0.0.0")
         .to_string();
-
-    let platform_exports = manifest
-        .get("platform-exports")
-        .and_then(Value::as_object)
-        .and_then(|value| value.get("windows"))
-        .and_then(Value::as_object);
-    let exports = platform_exports
-        .or_else(|| manifest.get("exports").and_then(Value::as_object))
-        .ok_or_else(|| AppError::param(format!("{name} 缺少 exports")))?;
-
-    let base = if platform_exports.is_some() {
-        format!("design_plugins/{name}/{remote_version}/windows/")
-    } else {
-        format!("design_plugins/{name}/{remote_version}/")
-    };
-
     let package_dir = format!("./plugins/{name}");
-    fs::create_dir_all(&package_dir)
-        .map_err(|error| AppError::db(format!("创建 {package_dir} 失败: {error}")))?;
+    let manifest_path = format!("{package_dir}/dytes.json");
+    let use_ai = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .as_ref()
+        .and_then(scanner::use_ai_from_manifest);
 
-    let mut downloads = Vec::new();
-    let mut files = Vec::new();
-    for (_local, remote) in exports {
-        let Some(remote_name) = remote.as_str() else {
-            continue;
-        };
-        let file_name = Path::new(remote_name)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        if file_name.is_empty() || file_name != remote_name {
-            continue;
-        }
-        downloads.push((format!("{base}{file_name}"), format!("{package_dir}/{file_name}")));
-        files.push(file_name.to_string());
-    }
-
-    cloud::download_objects(&downloads)?;
-
-    // 保存云端清单，scan 需要读取 use_ai / targets 等字段（G-47）。
-    fs::write(format!("{package_dir}/dytes.json"), &text)
-        .map_err(|error| AppError::db(format!("保存 dytes.json 失败: {error}")))?;
-
-    let use_ai = scanner::use_ai_from_manifest(&manifest);
     scanner::ensure_use_ai_columns()?;
     let plugin_uuid = upsert_plugin(name, &remote_version, &package_dir, use_ai)?;
     scanner::scan(ScanReq {
@@ -140,7 +123,8 @@ fn install_inner(name: &str) -> AppResult<(Value, String, String, String)> {
         "name": name,
         "version": remote_version,
         "install_path": package_dir,
-        "files": files,
+        "files": result.get("files").cloned().unwrap_or_else(|| json!([])),
+        "skipped": result.get("skipped").cloned().unwrap_or(json!(false)),
     });
     Ok((value, plugin_uuid, remote_version, package_dir))
 }

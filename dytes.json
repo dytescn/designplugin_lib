@@ -1,6 +1,6 @@
 {
   "name": "plugin_lib",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "design plugin data interface library",
   "keywords": [
     "plugin",
@@ -12,7 +12,8 @@
   "license": "MIT",
   "exports": {
     "./target/release/plugin_lib.dll": "plugin_lib.dll",
-    "./setup.ts": "setup.ts"
+    "./setup.ts": "setup.ts",
+    "./docs/mcp.md": "mcp.md"
   },
   "init": [
     "./setup.ts"

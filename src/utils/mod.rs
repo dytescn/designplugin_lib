@@ -1,8 +1,8 @@
 pub mod cjson;
-pub mod cloud;
 pub mod config;
 pub mod db;
 pub mod designdb;
+pub mod dytes;
 pub mod error;
 pub mod installer;
 pub mod plugin;
