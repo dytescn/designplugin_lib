@@ -73,7 +73,12 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
             continue;
         }
 
-        let (plugin_uuid, was_added) = upsert_plugin(&name, &package, read_use_ai(&package))?;
+        let (plugin_uuid, was_added) = upsert_plugin(
+            &name,
+            &package,
+            read_use_ai(&package),
+            manifest_uuid(&package).as_deref(),
+        )?;
         if was_added {
             added += 1;
         } else {
@@ -137,6 +142,18 @@ fn read_use_ai(package: &Path) -> Option<i64> {
     use_ai_from_manifest(&value)
 }
 
+/// 读取插件包 `dytes.json` 的 `uuid`；缺失或非法时返回 `None`。
+pub(crate) fn manifest_uuid(package: &Path) -> Option<String> {
+    let text = fs::read_to_string(package.join("dytes.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("uuid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|uuid| Uuid::parse_str(uuid).is_ok())
+        .map(str::to_string)
+}
+
 /// 从 `dytes.json` 的 JSON 内容解析 `use_ai`（供安装 / 扫描共用）。
 pub(crate) fn use_ai_from_manifest(value: &Value) -> Option<i64> {
     match value.get("use_ai") {
@@ -185,7 +202,12 @@ fn apply_use_ai(plugin_uuid: &str, use_ai: Option<i64>) -> AppResult<()> {
     Ok(())
 }
 
-fn upsert_plugin(name: &str, package: &Path, use_ai: Option<i64>) -> AppResult<(String, bool)> {
+fn upsert_plugin(
+    name: &str,
+    package: &Path,
+    use_ai: Option<i64>,
+    package_uuid: Option<&str>,
+) -> AppResult<(String, bool)> {
     let install_path = package.to_string_lossy().to_string();
     let timestamp = now();
 
@@ -213,7 +235,11 @@ fn upsert_plugin(name: &str, package: &Path, use_ai: Option<i64>) -> AppResult<(
         return Ok((uuid, false));
     }
 
-    let uuid = Uuid::new_v4().to_string();
+    // 新安装优先使用包清单 uuid；旧包无 uuid 时回退生成本地 uuid。
+    let uuid = package_uuid
+        .filter(|value| Uuid::parse_str(value).is_ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     db::execute(
         PLUGIN_DB,
         &format!(

@@ -111,8 +111,15 @@ fn install_inner(
         .as_ref()
         .and_then(scanner::use_ai_from_manifest);
 
+    let package_uuid = scanner::manifest_uuid(Path::new(&package_dir));
     scanner::ensure_use_ai_columns()?;
-    let plugin_uuid = upsert_plugin(name, &remote_version, &package_dir, use_ai)?;
+    let plugin_uuid = upsert_plugin(
+        name,
+        &remote_version,
+        &package_dir,
+        use_ai,
+        package_uuid.as_deref(),
+    )?;
     scanner::scan(ScanReq {
         dir: Some("./plugins".to_string()),
         persist: Some(true),
@@ -408,6 +415,7 @@ fn upsert_plugin(
     version: &str,
     package_dir: &str,
     use_ai: Option<i64>,
+    package_uuid: Option<&str>,
 ) -> AppResult<String> {
     let timestamp = now();
     let existing = db::query(
@@ -421,7 +429,11 @@ fn upsert_plugin(
     let plugin_uuid = if let Some(row) = existing.first() {
         as_str(row, "uuid")
     } else {
-        let uuid = Uuid::new_v4().to_string();
+        // 新安装优先使用 dytes.json 的包 uuid；缺失或非法时回退生成。
+        let uuid = package_uuid
+            .filter(|value| Uuid::parse_str(value).is_ok())
+            .map(str::to_string)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         db::execute(
             PLUGIN_DB,
             &format!(
