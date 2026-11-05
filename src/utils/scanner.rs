@@ -4,6 +4,14 @@
 //! 版本从 `./dytes.lock` 读取；没有 `mcp.json` 时只登记包与库。
 
 use crate::utils::config::PLUGIN_DB;
+
+/// 设计插件动态库扩展名（与 cyctron 的 FFI_EXT 保持一致）。
+#[cfg(windows)]
+const LIB_EXT: &str = "dll";
+#[cfg(target_os = "linux")]
+const LIB_EXT: &str = "so";
+#[cfg(target_os = "macos")]
+const LIB_EXT: &str = "dylib";
 use crate::utils::db::{self, quote};
 use crate::utils::error::{AppError, AppResult};
 use serde::Deserialize;
@@ -312,7 +320,7 @@ fn count_libs(package: &Path) -> i64 {
                         .path()
                         .extension()
                         .and_then(|value| value.to_str())
-                        .map(|ext| ext.eq_ignore_ascii_case("dll"))
+                        .map(|ext| ext.eq_ignore_ascii_case(LIB_EXT))
                         .unwrap_or(false)
                 })
                 .count() as i64
@@ -335,7 +343,7 @@ fn scan_libs(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
         let is_dll = path
             .extension()
             .and_then(|value| value.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("dll"))
+            .map(|ext| ext.eq_ignore_ascii_case(LIB_EXT))
             .unwrap_or(false);
         if !is_dll || file_name.is_empty() {
             continue;

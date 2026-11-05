@@ -24,9 +24,13 @@ pub fn database_path() -> String {
     {
         "./libary/database.dll".to_string()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         "./libary/database.so".to_string()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "./libary/database.dylib".to_string()
     }
 }
 

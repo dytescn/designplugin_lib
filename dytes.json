@@ -1,7 +1,7 @@
 {
   "name": "plugin_lib",
   "uuid": "8b1c9907-692d-473e-8676-459aec1ec6ba",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "design plugin data interface library",
   "keywords": [
     "plugin",
@@ -11,15 +11,27 @@
   "author": "funxdata",
   "type": "sys",
   "license": "MIT",
-  "exports": {
-    "./target/release/plugin_lib.dll": "plugin_lib.dll",
-    "./setup.ts": "setup.ts",
-    "./docs/mcp.md": "mcp.md"
+  "platform-exports": {
+    "windows": {
+      "./target/release/plugin_lib.dll": "plugin_lib.dll",
+      "./setup.ts": "setup.ts",
+      "./docs/mcp.md": "mcp.md"
+    },
+    "linux": {
+      "./target/release/libplugin_lib.so": "plugin_lib.so",
+      "./setup.ts": "setup.ts",
+      "./docs/mcp.md": "mcp.md"
+    },
+    "macos": {
+      "./target/release/libplugin_lib.dylib": "plugin_lib.dylib",
+      "./setup.ts": "setup.ts",
+      "./docs/mcp.md": "mcp.md"
+    }
   },
   "init": [
     "./setup.ts"
   ],
   "dependencies-sys": {
-    "database": "1.0.2"
+    "database": "1.0.3"
   }
 }

@@ -13,8 +13,10 @@ use std::sync::OnceLock;
 
 #[cfg(windows)]
 const DESIGNDB_LIB: &str = "./libary/libdesigndb.dll";
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 const DESIGNDB_LIB: &str = "./libary/libdesigndb.so";
+#[cfg(target_os = "macos")]
+const DESIGNDB_LIB: &str = "./libary/libdesigndb.dylib";
 
 const OUT_BUF_SIZE: usize = 65536;
 const PATH: &str = "skills";
