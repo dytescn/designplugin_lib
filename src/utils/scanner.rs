@@ -4,6 +4,7 @@
 //! 版本从 `./dytes.lock` 读取；没有 `mcp.json` 时只登记包与库。
 
 use crate::utils::config::PLUGIN_DB;
+use crate::utils::kv;
 
 /// 设计插件动态库扩展名（与 cyctron 的 FFI_EXT 保持一致）。
 #[cfg(windows)]
@@ -41,7 +42,8 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
 
     let Ok(entries) = fs::read_dir(&dir) else {
         return Ok(json!({
-            "found": 0, "added": 0, "updated": 0, "libs": 0, "functions": 0, "skills": 0
+            "found": 0, "added": 0, "updated": 0, "libs": 0, "functions": 0,
+            "skills": 0, "kv_records": 0
         }));
     };
 
@@ -58,6 +60,7 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
     let mut libs = 0;
     let mut functions = 0;
     let mut skills = 0;
+    let mut kv_records = 0;
 
     for package in packages {
         found += 1;
@@ -97,6 +100,13 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
         functions += scan_functions(&plugin_uuid, &package)?;
         apply_use_ai(&plugin_uuid, read_use_ai(&package))?;
         skills += import_skills(&plugin_uuid, &package)?;
+        match import_kv_resources(&plugin_uuid, &name, &package) {
+            Ok(count) => kv_records += count,
+            Err(error) => {
+                // plugins.db 已登记；kv 导入失败（如 embedding 模型缺失）不阻断安装。
+                eprintln!("[scan] 导入 kv 失败 ({name}): {error}");
+            }
+        }
     }
 
     Ok(json!({
@@ -105,7 +115,8 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
         "updated": updated,
         "libs": libs,
         "functions": functions,
-        "skills": skills
+        "skills": skills,
+        "kv_records": kv_records
     }))
 }
 
@@ -665,6 +676,237 @@ fn import_skills(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
     }
 
     Ok(count)
+}
+
+/// 按 `plugins_type` 把 prompts / skills / MCP 能力导入 kv。
+///
+/// - `chat_think` → `chat_think`
+/// - `chat_reply` → `chat_reply`
+/// - `plugins` / `plugins_coreldraw` → `chat_plugin`
+///
+/// kv_lib 未安装时返回 0；已安装但写入失败时返回错误。
+fn import_kv_resources(plugin_uuid: &str, name: &str, package: &Path) -> AppResult<i64> {
+    if !kv::available() {
+        return Ok(0);
+    }
+    let Some(manifest) = read_manifest(package) else {
+        return Ok(0);
+    };
+    let plugins_type = manifest
+        .get("plugins_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    match plugins_type {
+        "chat_think" => import_chat_resources(
+            plugin_uuid,
+            name,
+            package,
+            "chat_think",
+            "聊天思考",
+            "think 阶段检索词与技能",
+            10,
+        ),
+        "chat_reply" => import_chat_resources(
+            plugin_uuid,
+            name,
+            package,
+            "chat_reply",
+            "聊天回复",
+            "reply 阶段检索词与技能",
+            20,
+        ),
+        "plugins" | "plugins_coreldraw" => import_chat_plugins(plugin_uuid, name, package),
+        _ => Ok(0),
+    }
+}
+
+fn read_manifest(package: &Path) -> Option<Value> {
+    let text = fs::read_to_string(package.join("dytes.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn import_chat_resources(
+    plugin_uuid: &str,
+    name: &str,
+    package: &Path,
+    collection: &str,
+    label: &str,
+    description: &str,
+    sort: i64,
+) -> AppResult<i64> {
+    let prefix = format!("{plugin_uuid}:");
+    let mut items = Vec::new();
+
+    for (index, prompt) in prompt_values(package, name).iter().enumerate() {
+        items.push(json!({
+            "key": format!("{prefix}prompt:{index}"),
+            "value": prompt,
+            "text": prompt,
+            "meta": { "plugin_uuid": plugin_uuid, "plugin_name": name, "kind": "prompt" },
+            "rank": index as i64 + 1,
+            "force": true,
+        }));
+    }
+
+    for (index, (skill_id, content)) in skill_values(package, name).iter().enumerate() {
+        if content.trim().is_empty() || content.len() > 60_000 {
+            continue;
+        }
+        items.push(json!({
+            "key": format!("{prefix}skill:{skill_id}"),
+            "value": content,
+            "text": content,
+            "meta": { "plugin_uuid": plugin_uuid, "plugin_name": name, "kind": "skill" },
+            "rank": index as i64 + 1,
+            "force": true,
+        }));
+    }
+
+    if items.is_empty() {
+        return Ok(0);
+    }
+
+    kv::ensure_collection(collection, label, description, sort)?;
+    kv::replace_records(collection, &prefix, &items).map(|count| count as i64)
+}
+
+fn prompt_values(package: &Path, name: &str) -> Vec<String> {
+    let mut candidates = vec![
+        package.join("prompts.json"),
+        package.join(format!("{name}.json")),
+    ];
+    if let Ok(entries) = fs::read_dir(package.join("prompts")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) == Some("json") {
+                candidates.push(path);
+            }
+        }
+    }
+
+    for path in candidates {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let values = extract_prompt_values(&value);
+        if !values.is_empty() {
+            return values;
+        }
+    }
+    Vec::new()
+}
+
+fn extract_prompt_values(value: &Value) -> Vec<String> {
+    let list = value
+        .as_array()
+        .or_else(|| value.get("prompts").and_then(Value::as_array));
+    list.map(|list| {
+        list.iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn skill_values(package: &Path, name: &str) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+
+    if let Ok(text) = fs::read_to_string(package.join("skills.json")) {
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            if let Some(skills) = value.get("skills").and_then(Value::as_array) {
+                for skill in skills {
+                    let id = skill
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("skill")
+                        .to_string();
+                    if let Some(content) = skill.get("content").and_then(Value::as_str) {
+                        values.push((id, content.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    if values.is_empty() {
+        let path = package.join(format!("{name}.md"));
+        if let Ok(content) = fs::read_to_string(path) {
+            values.push(("main".to_string(), content));
+        }
+    }
+
+    values
+}
+
+fn import_chat_plugins(plugin_uuid: &str, name: &str, package: &Path) -> AppResult<i64> {
+    let text = match fs::read_to_string(package.join("mcp.json")) {
+        Ok(text) => text,
+        Err(_) => return Ok(0),
+    };
+    let value: Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("[scan] 解析 mcp.json 失败 ({name}): {error}");
+            return Ok(0);
+        }
+    };
+    let Some(tools) = value.get("tools").and_then(Value::as_array) else {
+        return Ok(0);
+    };
+
+    let prefix = format!("{plugin_uuid}:");
+    let mut items = Vec::new();
+    for tool in tools {
+        let Some(file_name) = tool.as_str() else {
+            continue;
+        };
+        if file_name.contains('/') || file_name.contains('\\') {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(package.join(file_name)) else {
+            continue;
+        };
+        let Ok(tool_value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some(symbol) = tool_value.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let description = tool_value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(symbol);
+        items.push(json!({
+            "key": format!("{prefix}tool:{symbol}"),
+            "value": description,
+            "text": format!("{symbol} {description}"),
+            "meta": {
+                "plugin": name,
+                "ffi_symbol": symbol,
+                "plugin_uuid": plugin_uuid,
+            },
+            "force": true,
+        }));
+    }
+
+    if items.is_empty() {
+        return Ok(0);
+    }
+
+    kv::ensure_collection(
+        "chat_plugin",
+        "聊天插件",
+        "chat 分类插件的能力描述",
+        30,
+    )?;
+    kv::replace_records("chat_plugin", &prefix, &items).map(|count| count as i64)
 }
 
 fn sha256_file(path: &Path) -> AppResult<String> {

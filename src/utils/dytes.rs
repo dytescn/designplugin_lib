@@ -65,6 +65,9 @@ pub fn run(root: &Path, args: &[&str]) -> AppResult<Output> {
     let output = Command::new(&exe)
         .args(args)
         .current_dir(root)
+        // plugin_lib 自己会在 install 后调用 scanner::scan；避免 dytes 再回调
+        // 正在处理当前请求的 cyctron，造成嵌套等待。
+        .env("DYTES_SKIP_PLUGIN_SCAN", "1")
         .output()
         .map_err(|error| {
             AppError::file(format!("执行 {} 失败: {error}", exe.display()))

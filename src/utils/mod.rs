@@ -5,6 +5,7 @@ pub mod designdb;
 pub mod dytes;
 pub mod error;
 pub mod installer;
+pub mod kv;
 pub mod plugin;
 pub mod scanner;
 pub mod updates;

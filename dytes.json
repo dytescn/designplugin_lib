@@ -1,7 +1,7 @@
 {
   "name": "plugin_lib",
   "uuid": "8b1c9907-692d-473e-8676-459aec1ec6ba",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "design plugin data interface library",
   "keywords": [
     "plugin",
@@ -32,6 +32,7 @@
     "./setup.ts"
   ],
   "dependencies-sys": {
-    "database": "1.0.3"
+    "database": "1.0.3",
+    "kv_lib": "0.1.2"
   }
 }
