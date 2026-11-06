@@ -14,22 +14,22 @@
   "platform-exports": {
     "windows": {
       "./target/release/plugin_lib.dll": "plugin_lib.dll",
-      "./setup.ts": "setup.ts",
-      "./docs/mcp.md": "mcp.md"
+      "./docs/mcp.md": "mcp.md",
+      "./setup.json": "setup.json"
     },
     "linux": {
       "./target/release/libplugin_lib.so": "plugin_lib.so",
-      "./setup.ts": "setup.ts",
-      "./docs/mcp.md": "mcp.md"
+      "./docs/mcp.md": "mcp.md",
+      "./setup.json": "setup.json"
     },
     "macos": {
       "./target/release/libplugin_lib.dylib": "plugin_lib.dylib",
-      "./setup.ts": "setup.ts",
-      "./docs/mcp.md": "mcp.md"
+      "./docs/mcp.md": "mcp.md",
+      "./setup.json": "setup.json"
     }
   },
   "init": [
-    "./setup.ts"
+    "./setup.json"
   ],
   "dependencies-sys": {
     "database": "1.0.3",

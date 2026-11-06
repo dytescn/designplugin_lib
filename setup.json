@@ -1,0 +1,565 @@
+{
+  "version": 1,
+  "requests": [
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugins (\n      id           INTEGER PRIMARY KEY AUTOINCREMENT,\n      uuid         TEXT UNIQUE NOT NULL,\n      ouid         TEXT,\n      flow_uid     TEXT,\n      type_uid     TEXT,\n      category_id  TEXT,\n      name         TEXT,\n      \"desc\"       TEXT,\n      create_by    TEXT,\n      cover        TEXT,\n      status       TEXT DEFAULT 'draft',\n      public       INTEGER DEFAULT 0,\n      updated_by   TEXT,\n      created_at   INTEGER,\n      updated_at   INTEGER,\n      deleted_at   INTEGER,\n      installed    INTEGER DEFAULT 0,\n      install_path TEXT,\n      enabled      INTEGER DEFAULT 1,\n      plugin_type  TEXT DEFAULT 'dll',\n      target       TEXT DEFAULT 'common',\n      use_ai       INTEGER NOT NULL DEFAULT 0\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_categories (\n      id           INTEGER PRIMARY KEY AUTOINCREMENT,\n      uuid         TEXT UNIQUE NOT NULL,\n      type_name    TEXT UNIQUE,\n      icon         TEXT,\n      parent_uuid  TEXT,\n      sort_order   INTEGER DEFAULT 0,\n      created_by   TEXT,\n      updated_by   TEXT,\n      created_at   INTEGER,\n      updated_at   INTEGER,\n      deleted_at   INTEGER\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_versions (\n      id             INTEGER PRIMARY KEY AUTOINCREMENT,\n      plugin_uuid    TEXT,\n      version        TEXT,\n      changelog      TEXT,\n      file_path      TEXT,\n      file_size      INTEGER,\n      file_hash      TEXT,\n      file_type      TEXT DEFAULT 'zip',\n      min_engine_ver TEXT,\n      max_engine_ver TEXT,\n      status         TEXT DEFAULT 'active',\n      is_latest      INTEGER DEFAULT 0,\n      created_by     TEXT,\n      created_at     INTEGER,\n      updated_at     INTEGER,\n      deleted_at     INTEGER,\n      UNIQUE(plugin_uuid, version)\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_configs (\n      id            INTEGER PRIMARY KEY AUTOINCREMENT,\n      plugin_uuid   TEXT,\n      version_id    INTEGER DEFAULT 0,\n      param_key     TEXT,\n      param_type    TEXT,\n      default_value TEXT,\n      required      INTEGER DEFAULT 0,\n      description   TEXT,\n      options       TEXT,\n      sort_order    INTEGER DEFAULT 0,\n      created_at    INTEGER,\n      updated_at    INTEGER,\n      UNIQUE(plugin_uuid, version_id, param_key)\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_installs (\n      id           INTEGER PRIMARY KEY AUTOINCREMENT,\n      plugin_uuid  TEXT NOT NULL,\n      version      TEXT NOT NULL,\n      install_path TEXT NOT NULL,\n      file_hash    TEXT,\n      enabled      INTEGER DEFAULT 1,\n      status       TEXT DEFAULT 'installed',\n      started_at   INTEGER,\n      last_error   TEXT,\n      created_at   INTEGER,\n      updated_at   INTEGER,\n      UNIQUE(plugin_uuid, version)\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_relations (\n      id            INTEGER PRIMARY KEY AUTOINCREMENT,\n      plugin_uuid   TEXT NOT NULL,\n      related_uuid  TEXT NOT NULL,\n      relation_type TEXT NOT NULL,\n      created_at    INTEGER,\n      UNIQUE(plugin_uuid, related_uuid, relation_type)\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_libs (\n      id            INTEGER PRIMARY KEY AUTOINCREMENT,\n      uuid          TEXT UNIQUE NOT NULL,\n      plugin_uuid   TEXT NOT NULL,\n      version       TEXT,\n      name          TEXT NOT NULL,\n      file_name     TEXT NOT NULL,\n      platform      TEXT NOT NULL DEFAULT 'windows',\n      target        TEXT DEFAULT 'common',\n      install_path  TEXT,\n      libary_path   TEXT,\n      file_hash     TEXT,\n      file_size     INTEGER,\n      is_local      INTEGER DEFAULT 0,\n      is_registered INTEGER DEFAULT 0,\n      load_ok       INTEGER DEFAULT -1,\n      last_check_at INTEGER,\n      created_at    INTEGER,\n      updated_at    INTEGER,\n      UNIQUE(plugin_uuid, platform, name)\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_functions (\n      id              INTEGER PRIMARY KEY AUTOINCREMENT,\n      uuid            TEXT UNIQUE NOT NULL,\n      lib_uuid        TEXT NOT NULL,\n      lib_name        TEXT NOT NULL,\n      symbol          TEXT NOT NULL,\n      method          TEXT NOT NULL DEFAULT 'post',\n      ffi_symbol      TEXT NOT NULL,\n      title           TEXT NOT NULL,\n      description     TEXT NOT NULL,\n      category        TEXT,\n      params_schema   TEXT NOT NULL,\n      params_example  TEXT,\n      return_schema   TEXT NOT NULL,\n      return_example  TEXT,\n      error_codes     TEXT,\n      side_effects    INTEGER DEFAULT 0,\n      exposed_mcp     INTEGER DEFAULT 1,\n      is_local        INTEGER DEFAULT 0,\n      use_ai          INTEGER DEFAULT 1,\n      embed_status    INTEGER DEFAULT 0,\n      embed_model     TEXT,\n      embed_text_hash TEXT,\n      embedded_at     INTEGER,\n      source          TEXT,\n      source_hash     TEXT,\n      created_at      INTEGER,\n      updated_at      INTEGER,\n      UNIQUE(lib_uuid, symbol)\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "ALTER TABLE plugins ADD COLUMN installed INTEGER DEFAULT 0"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "ALTER TABLE plugins ADD COLUMN install_path TEXT"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "ALTER TABLE plugins ADD COLUMN enabled INTEGER DEFAULT 1"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "ALTER TABLE plugins ADD COLUMN plugin_type TEXT DEFAULT 'dll'"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "ALTER TABLE plugins ADD COLUMN target TEXT DEFAULT 'common'"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "ALTER TABLE plugins ADD COLUMN use_ai INTEGER NOT NULL DEFAULT 0"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "ALTER TABLE plugin_functions ADD COLUMN use_ai INTEGER DEFAULT 1"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugins_category ON plugins(category_id)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugins_target ON plugins(target)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins(status)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugins_name ON plugins(name)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_categories_parent ON plugin_categories(parent_uuid)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_versions_latest ON plugin_versions(plugin_uuid, is_latest)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_configs_plugin ON plugin_configs(plugin_uuid, version_id)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_installs_plugin ON plugin_installs(plugin_uuid, status)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_relations_type ON plugin_relations(plugin_uuid, relation_type)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_libs_plugin ON plugin_libs(plugin_uuid)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_libs_name ON plugin_libs(name)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_libs_local ON plugin_libs(is_local, platform)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_lib ON plugin_functions(lib_uuid)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_lookup ON plugin_functions(lib_name, ffi_symbol)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "DROP INDEX IF EXISTS idx_plugin_functions_local"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_local ON plugin_functions(is_local, embed_status, use_ai)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_status ON plugin_functions(embed_status)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_cat ON plugin_functions(category)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_configs_key ON plugin_configs(plugin_uuid, version_id, param_key)"
+      },
+      "allow_error": true
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS skill_categories (\n      code        TEXT PRIMARY KEY NOT NULL,\n      name        TEXT NOT NULL DEFAULT '',\n      description TEXT NOT NULL DEFAULT '',\n      sort        INTEGER NOT NULL DEFAULT 0,\n      created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS skills (\n      id            TEXT PRIMARY KEY NOT NULL,\n      name          TEXT NOT NULL DEFAULT '',\n      description   TEXT NOT NULL DEFAULT '',\n      category      TEXT NOT NULL DEFAULT 'General',\n      content       TEXT NOT NULL DEFAULT '',\n      trigger       TEXT,\n      params_schema TEXT,\n      is_system     INTEGER NOT NULL DEFAULT 0,\n      is_enabled    INTEGER NOT NULL DEFAULT 1,\n      sort          INTEGER NOT NULL DEFAULT 0,\n      version       INTEGER NOT NULL DEFAULT 1,\n      created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_skills_category_sort ON skills(category, sort)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_skills_enabled ON skills(is_enabled)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_skills (\n      plugin_uuid TEXT NOT NULL,\n      skill_id    TEXT NOT NULL,\n      version     INTEGER NOT NULL DEFAULT 1,\n      is_owned    INTEGER NOT NULL DEFAULT 1,\n      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,\n      UNIQUE(plugin_uuid, skill_id)\n    )"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_skills_plugin ON plugin_skills(plugin_uuid)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_skills_skill ON plugin_skills(skill_id)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "INSERT OR IGNORE INTO skill_categories (code, name, sort)\n        VALUES ('general', '通用', 10)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "INSERT OR IGNORE INTO skill_categories (code, name, sort)\n        VALUES ('design', '设计软件', 20)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "INSERT OR IGNORE INTO skill_categories (code, name, sort)\n        VALUES ('material', '素材库', 30)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "INSERT OR IGNORE INTO skill_categories (code, name, sort)\n        VALUES ('plugin', '本地插件', 40)"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:44944/database",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/libary",
+        "FFI-Symbol": "db_update"
+      },
+      "body": {
+        "path": "./plugins",
+        "sql": "INSERT OR IGNORE INTO skill_categories (code, name, sort)\n        VALUES ('safety', '安全与权限', 90)"
+      }
+    }
+  ]
+}
