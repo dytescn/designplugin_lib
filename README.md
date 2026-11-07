@@ -60,8 +60,7 @@ Body: {"page":1,"page_size":20}
 - M1 查询：`get_plugins`、`get_plugin`、`get_categories`、`get_versions`、`get_configs`、`get_install`、`get_libs`、`get_functions`
 - M2 新增：`post_plugin`、`post_category`、`post_version`、`post_config`
 - M3 更新：`update_plugin`、`update_category`、`update_version`、`update_config`、`patch_plugin`、`patch_install`、`patch_config`、`patch_function`
-
-待实现：`post_install`、`post_uninstall`、`post_delete`、`post_scan`（M4）。
+- M4 扫描：`post_scan` 登记插件并导入 kv；安装类 `post_install` / `post_uninstall` / `post_delete` 待实现。
 
 ## 配置值约定
 

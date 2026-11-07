@@ -1,6 +1,6 @@
 [package]
 name = "plugin_lib"
-version = "1.0.10"
+version = "1.0.11"
 edition = "2024"
 description = "plugin_lib: design plugin data interface library"
 license = "MIT"

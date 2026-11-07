@@ -43,7 +43,8 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
     let Ok(entries) = fs::read_dir(&dir) else {
         return Ok(json!({
             "found": 0, "added": 0, "updated": 0, "libs": 0, "functions": 0,
-            "skills": 0, "kv_records": 0
+            "skills": 0, "kv_records": 0, "kv_failed": 0, "kv_errors": [],
+            "partial": false
         }));
     };
 
@@ -61,6 +62,7 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
     let mut functions = 0;
     let mut skills = 0;
     let mut kv_records = 0;
+    let mut kv_errors: Vec<Value> = Vec::new();
 
     for package in packages {
         found += 1;
@@ -103,8 +105,12 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
         match import_kv_resources(&plugin_uuid, &name, &package) {
             Ok(count) => kv_records += count,
             Err(error) => {
-                // plugins.db 已登记；kv 导入失败（如 embedding 模型缺失）不阻断安装。
+                // plugins.db 已登记；kv 导入失败不阻断安装，但要在响应中显式上报。
                 eprintln!("[scan] 导入 kv 失败 ({name}): {error}");
+                kv_errors.push(json!({
+                    "plugin": name,
+                    "error": error.to_string(),
+                }));
             }
         }
     }
@@ -116,7 +122,10 @@ pub fn scan(req: ScanReq) -> AppResult<Value> {
         "libs": libs,
         "functions": functions,
         "skills": skills,
-        "kv_records": kv_records
+        "kv_records": kv_records,
+        "kv_failed": kv_errors.len(),
+        "kv_errors": kv_errors,
+        "partial": !kv_errors.is_empty()
     }))
 }
 
@@ -128,7 +137,10 @@ fn now() -> i64 {
 }
 
 fn as_str(row: &Value, key: &str) -> String {
-    row.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    row.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 fn read_lock_versions(path: &str) -> HashMap<String, String> {
@@ -370,7 +382,9 @@ fn scan_libs(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
         // 现在记录实际加载路径，is_registered 以该文件是否存在为准。
         let load_path = install_path.clone();
         let is_registered = Path::new(&install_path).exists();
-        let file_size = fs::metadata(&path).map(|meta| meta.len() as i64).unwrap_or(0);
+        let file_size = fs::metadata(&path)
+            .map(|meta| meta.len() as i64)
+            .unwrap_or(0);
         let file_hash = sha256_file(&path).unwrap_or_default();
         let timestamp = now();
 
@@ -587,10 +601,7 @@ fn import_skills(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
         if id.is_empty() {
             continue;
         }
-        let content = skill
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let content = skill.get("content").and_then(Value::as_str).unwrap_or("");
         if content.trim().is_empty() {
             continue;
         }
@@ -611,14 +622,8 @@ fn import_skills(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
             .get("params_schema")
             .map(ToString::to_string)
             .unwrap_or_else(|| "{}".to_string());
-        let is_system = skill
-            .get("is_system")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        let is_enabled = skill
-            .get("is_enabled")
-            .and_then(Value::as_i64)
-            .unwrap_or(1);
+        let is_system = skill.get("is_system").and_then(Value::as_i64).unwrap_or(0);
+        let is_enabled = skill.get("is_enabled").and_then(Value::as_i64).unwrap_or(1);
         let sort = skill.get("sort").and_then(Value::as_i64).unwrap_or(0);
 
         db::execute(
@@ -900,12 +905,7 @@ fn import_chat_plugins(plugin_uuid: &str, name: &str, package: &Path) -> AppResu
         return Ok(0);
     }
 
-    kv::ensure_collection(
-        "chat_plugin",
-        "聊天插件",
-        "chat 分类插件的能力描述",
-        30,
-    )?;
+    kv::ensure_collection("chat_plugin", "聊天插件", "chat 分类插件的能力描述", 30)?;
     kv::replace_records("chat_plugin", &prefix, &items).map(|count| count as i64)
 }
 

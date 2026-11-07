@@ -20,6 +20,8 @@ const KV_LIB: &str = "./libary/kv_lib.dylib";
 
 const OUT_BUF_SIZE: usize = 65536;
 const BATCH: usize = 200;
+/// kv_lib 分页上限为 100；超出会返回 400102。
+const LIST_PAGE_SIZE: usize = 100;
 
 type FfiFn = unsafe extern "C" fn(*const c_char, *mut c_char) -> c_int;
 
@@ -55,9 +57,7 @@ fn call(symbol: &str, request: Value) -> AppResult<Value> {
         .to_str()
         .map_err(|_| AppError::db("kv_lib 响应非 UTF-8"))?;
     if text.is_empty() {
-        return Err(AppError::db(format!(
-            "kv_lib {symbol} 返回空（ret={ret}）"
-        )));
+        return Err(AppError::db(format!("kv_lib {symbol} 返回空（ret={ret}）")));
     }
 
     let value: Value = serde_json::from_str(text)
@@ -95,21 +95,22 @@ pub fn ensure_collection(code: &str, name: &str, description: &str, sort: i64) -
     Ok(())
 }
 
+fn list_request(collection: &str, prefix: &str, page: usize) -> Value {
+    json!({
+        "action": "list",
+        "collection": collection,
+        "prefix": prefix,
+        "page": page,
+        "page_size": LIST_PAGE_SIZE,
+        "with_value": false,
+    })
+}
+
 fn list_keys(collection: &str, prefix: &str) -> AppResult<Vec<String>> {
     let mut keys = Vec::new();
     let mut page = 1usize;
     loop {
-        let data = call(
-            "post_kv_record",
-            json!({
-                "action": "list",
-                "collection": collection,
-                "prefix": prefix,
-                "page": page,
-                "page_size": 1000,
-                "with_value": false,
-            }),
-        )?;
+        let data = call("post_kv_record", list_request(collection, prefix, page))?;
         let list = data
             .get("list")
             .and_then(Value::as_array)
@@ -172,4 +173,17 @@ pub fn replace_records(collection: &str, prefix: &str, items: &[Value]) -> AppRe
     }
     put_items(collection, items)?;
     Ok(items.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_request_uses_kv_lib_page_limit() {
+        let request = list_request("chat_think", "prefix:", 2);
+        assert_eq!(request["page"], 2);
+        assert_eq!(request["page_size"], 100);
+        assert!(request["page_size"].as_u64().unwrap() <= 100);
+    }
 }

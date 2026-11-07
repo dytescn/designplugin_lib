@@ -280,7 +280,7 @@ MCP 映射建议：
 | `get_functions` | `{list, page, page_size, total}` |
 | `get_skill_categories` | `{list}` |
 | `get_skills` / `get_skill` | 技能记录 / 列表 |
-| `post_scan` | `{found, added, updated, libs, functions, skills}` |
+| `post_scan` | `{found, added, updated, libs, functions, skills, kv_records, kv_failed, kv_errors, partial}` |
 | `post_install` / `post_update` | 安装结果（含插件 uuid、版本、路径） |
 | `post_check_updates` | 更新检查结果 |
 | `post_delete` | 删除结果与 `function_uuids` |
