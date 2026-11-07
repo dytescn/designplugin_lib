@@ -512,7 +512,7 @@ assert_eq!(ret, 0);
 | 项 | 值 |
 | --- | --- |
 | 包名 / 版本 | `plugin_lib` / 1.0.7 |
-| 发布产物 | `plugin_lib.dll`、`setup.ts` |
+| 发布产物 | `plugin_lib.dll`、`setup.json` |
 | 规范工具数 | 36（不含 23 个 POST 别名） |
 | 平台 | Windows（`cdylib`） |
 | 输出缓冲 | 64 KiB |

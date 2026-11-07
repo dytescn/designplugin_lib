@@ -7,7 +7,7 @@
 //!   cargo test --test db_integration -- --nocapture
 //! ```
 //!
-//! 正式建表由 `setup.ts` 负责；测试只创建用到的表，避免依赖 HTTP 服务。
+//! 正式建表由 `setup.json` 负责；测试只创建用到的表，避免依赖 HTTP 服务。
 //! `info.setting` 由 `setting_ui` 创建，这里按同样的结构模拟。
 
 use plugin_lib::utils::db;

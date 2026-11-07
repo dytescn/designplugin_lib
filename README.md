@@ -30,17 +30,19 @@ cargo clippy --all-targets
 ## 初始化
 
 ```bash
-deno run -A setup.ts
+dytes install sys plugin_lib
+# 或直接经 cyctron 执行 setup.json
 ```
 
 前置：`database` 服务已在 `http://127.0.0.1:44944` 运行。脚本幂等，只初始化 `plugins.db`
 （建表 / 补列 / 建索引）；`info.db` 的 `setting` 表由 `setting_ui` 创建，`plugin_lib` 只读写。
 
-- `dytes update` 安装 sys 包后会自动执行 `libary/plugin_lib/setup.ts`，并把包内 `dytes.json`
-  与 `setup.ts` 保存到 `libary/plugin_lib/`；
-- 也可手动执行 `deno run -A setup.ts`。
+- `dytes update` 安装 sys 包后会自动执行 `libary/plugin_lib/setup.json`，并把包内 `dytes.json`
+  与 `setup.json` 保存到 `libary/plugin_lib/`；
+- 也可手动执行 `dytes install sys plugin_lib
+# 或直接经 cyctron 执行 setup.json`。
 
-> `setup.ts` 只使用顶层 `await fetch` + 字面量参数，以兼容 update 的 oxc 静态提取；
+> `setup.json` 由 dytes 直接经 cyctron 执行，不需要 Deno / Node 运行时；
 > 不要改成函数封装、循环或条件判断，否则安装器无法提取请求。
 
 ## 调用
@@ -56,7 +58,7 @@ Body: {"page":1,"page_size":20}
 
 ## 当前实现范围
 
-- 初始化：`setup.ts` 建表 / 补列 / 建索引（幂等；Rust 侧 `post_migrate` 已移除）
+- 初始化：`setup.json` 建表 / 补列 / 建索引（幂等；Rust 侧 `post_migrate` 已移除）
 - M1 查询：`get_plugins`、`get_plugin`、`get_categories`、`get_versions`、`get_configs`、`get_install`、`get_libs`、`get_functions`
 - M2 新增：`post_plugin`、`post_category`、`post_version`、`post_config`
 - M3 更新：`update_plugin`、`update_category`、`update_version`、`update_config`、`patch_plugin`、`patch_install`、`patch_config`、`patch_function`
