@@ -894,7 +894,9 @@ fn import_chat_plugins(plugin_uuid: &str, name: &str, package: &Path) -> AppResu
             "text": format!("{symbol} {description}"),
             "meta": {
                 "plugin": name,
-                "ffi_symbol": symbol,
+                // chat 插件固定导出 post_chat；mcp tool 名只用于能力描述。
+                "ffi_symbol": "chat",
+                "tool": symbol,
                 "plugin_uuid": plugin_uuid,
             },
             "force": true,
