@@ -200,6 +200,7 @@ pub(crate) fn use_ai_from_manifest(value: &Value) -> Option<i64> {
 pub(crate) fn ensure_use_ai_columns() -> AppResult<()> {
     ensure_column("plugins", "use_ai", "INTEGER NOT NULL DEFAULT 0")?;
     ensure_column("plugin_functions", "use_ai", "INTEGER DEFAULT 1")?;
+    ensure_column("plugin_functions", "tags", "TEXT")?;
     Ok(())
 }
 
@@ -456,6 +457,18 @@ fn count_functions(package: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+fn upsert_category(category: &str, timestamp: i64) -> AppResult<()> {
+    db::execute(
+        PLUGIN_DB,
+        &format!(
+            "INSERT OR IGNORE INTO plugin_categories              (uuid, type_name, sort_order, created_at, updated_at)              VALUES ({}, {}, 0, {timestamp}, {timestamp})",
+            quote(&Uuid::new_v4().to_string()),
+            quote(category)
+        ),
+    )?;
+    Ok(())
+}
+
 fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
     let mcp_path = package.join("mcp.json");
     if !mcp_path.exists() {
@@ -474,16 +487,35 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
     let lib_rows = db::query(
         PLUGIN_DB,
         &format!(
-            "SELECT uuid, name FROM plugin_libs WHERE plugin_uuid = {} AND platform = 'windows' \
+            "SELECT uuid, name FROM plugin_libs WHERE plugin_uuid = {} \
              ORDER BY id ASC LIMIT 1",
             quote(plugin_uuid)
         ),
     )?;
-    let Some(lib_row) = lib_rows.first() else {
-        return Ok(0);
+    // MCP-only 资源包没有动态库：用 plugin_uuid 作为 lib_uuid，函数仍然可见。
+    let (lib_uuid, lib_name) = match lib_rows.first() {
+        Some(row) => (as_str(row, "uuid"), as_str(row, "name")),
+        None => (
+            plugin_uuid.to_string(),
+            package
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("mcp")
+                .to_string(),
+        ),
     };
-    let lib_uuid = as_str(lib_row, "uuid");
-    let lib_name = as_str(lib_row, "name");
+    let manifest = read_manifest(package);
+    let manifest_category = manifest
+        .as_ref()
+        .and_then(|value| value.get("category"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let manifest_tags = manifest
+        .as_ref()
+        .and_then(|value| value.get("tags"))
+        .cloned()
+        .unwrap_or(Value::Null);
     let timestamp = now();
 
     let mut count = 0;
@@ -510,6 +542,20 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
             .get("description")
             .and_then(Value::as_str)
             .unwrap_or(symbol);
+        let category = tool_value
+            .get("category")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&manifest_category)
+            .to_string();
+        let tags = tool_value
+            .get("tags")
+            .cloned()
+            .filter(|value| value.as_array().is_some_and(|items| !items.is_empty()))
+            .unwrap_or_else(|| manifest_tags.clone());
+        if !category.is_empty() {
+            upsert_category(&category, timestamp)?;
+        }
         let params_schema = tool_value
             .get("inputSchema")
             .map(ToString::to_string)
@@ -533,12 +579,15 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                 PLUGIN_DB,
                 &format!(
                     "UPDATE plugin_functions SET lib_name = {}, ffi_symbol = {}, title = {}, \
-                     description = {}, params_schema = {}, return_schema = {}, is_local = 1, \
-                     source = 'mcp.json', updated_at = {timestamp} WHERE uuid = {}",
+                     description = {}, category = {}, tags = {}, params_schema = {}, \
+                     return_schema = {}, is_local = 1, source = 'mcp.json', \
+                     updated_at = {timestamp} WHERE uuid = {}",
                     quote(&lib_name),
                     quote(symbol),
                     quote(symbol),
                     quote(description),
+                    quote(&category),
+                    quote(&tags.to_string()),
                     quote(&params_schema),
                     quote(&return_schema),
                     quote(&as_str(row, "uuid"))
@@ -550,10 +599,11 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                 PLUGIN_DB,
                 &format!(
                     "INSERT INTO plugin_functions (uuid, lib_uuid, lib_name, symbol, method, \
-                     ffi_symbol, title, description, params_schema, return_schema, side_effects, \
-                     exposed_mcp, is_local, embed_status, source, created_at, updated_at) \
-                     VALUES ({}, {}, {}, {}, 'post', {}, {}, {}, {}, {}, 0, 1, 1, 0, 'mcp.json', \
-                     {timestamp}, {timestamp})",
+                     ffi_symbol, title, description, category, tags, params_schema, \
+                     return_schema, side_effects, exposed_mcp, is_local, embed_status, source, \
+                     created_at, updated_at) \
+                     VALUES ({}, {}, {}, {}, 'post', {}, {}, {}, {}, {}, {}, {}, 0, 1, 1, 0, \
+                     'mcp.json', {timestamp}, {timestamp})",
                     quote(&function_uuid),
                     quote(&lib_uuid),
                     quote(&lib_name),
@@ -561,6 +611,8 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                     quote(symbol),
                     quote(symbol),
                     quote(description),
+                    quote(&category),
+                    quote(&tags.to_string()),
                     quote(&params_schema),
                     quote(&return_schema)
                 ),
@@ -898,6 +950,8 @@ fn import_chat_plugins(plugin_uuid: &str, name: &str, package: &Path) -> AppResu
                 "ffi_symbol": "chat",
                 "tool": symbol,
                 "plugin_uuid": plugin_uuid,
+                "category": tool_value.get("category").and_then(Value::as_str).unwrap_or(""),
+                "tags": tool_value.get("tags").cloned().unwrap_or(Value::Null),
             },
             "force": true,
         }));

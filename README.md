@@ -69,3 +69,11 @@ Body: {"page":1,"page_size":20}
 - 配置定义（默认值、类型、选项）存 `plugins.db` 的 `plugin_configs`；
 - 用户修改值存 `info.db` 的 `setting`（`category = 'plugin'`，`key = 'plugin.config.<plugin_uuid>.<param_key>'`）；该表由 `setting_ui` 创建，`plugin_lib` 只读写、不建表；
 - `get_configs` 返回 `value`（用户值优先）与 `source`（`user` / `default`）。
+
+
+## scan 分类与 MCP-only 包
+
+- MCP-only 资源包（没有动态库）也会登记 `plugin_functions`，`lib_uuid` 使用 `plugin_uuid`；
+- 从 `dytes.json` 读取 `category` / `tags`，从 `mcp/<tool>.json` 读取工具级
+  `category` / `tags`，写入 `plugin_functions.category` / `tags`；
+- 分类同时写入 `plugin_categories`（`INSERT OR IGNORE`）。

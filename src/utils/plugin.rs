@@ -867,7 +867,8 @@ pub fn get_functions(req: GetFunctionsReq) -> AppResult<Value> {
     }
     if let Some(plugin_uuid) = req.plugin_uuid.as_deref().filter(|v| !v.is_empty()) {
         conditions.push(format!(
-            "lib_uuid IN (SELECT uuid FROM plugin_libs WHERE plugin_uuid = {})",
+            "(lib_uuid IN (SELECT uuid FROM plugin_libs WHERE plugin_uuid = {})              OR lib_uuid = {})",
+            quote(plugin_uuid),
             quote(plugin_uuid)
         ));
     }
