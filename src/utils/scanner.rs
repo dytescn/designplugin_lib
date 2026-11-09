@@ -486,6 +486,10 @@ fn upsert_category(category: &str, timestamp: i64) -> AppResult<()> {
     Ok(())
 }
 
+fn local_library_exists(name: &str) -> bool {
+    Path::new(&format!("libary/{name}.{LIB_EXT}")).is_file()
+}
+
 fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
     let Some(root) = mcp_root(package) else {
         return Ok(0);
@@ -554,6 +558,28 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
         let Some(symbol) = tool_value.get("name").and_then(Value::as_str) else {
             continue;
         };
+        // MCP 工具通过 transport 关联真实能力库：
+        // - library / library_uuid：实际执行 FFI 的库
+        // - ffiSymbol：实际导出符号（工具名只用于展示）
+        let transport = tool_value.get("transport");
+        let ffi_symbol = transport
+            .and_then(|value| value.get("ffiSymbol"))
+            .and_then(Value::as_str)
+            .unwrap_or(symbol);
+        let (tool_lib_uuid, tool_lib_name) = transport
+            .and_then(|value| {
+                let uuid = value.get("library_uuid").and_then(Value::as_str)?;
+                let name = value.get("library").and_then(Value::as_str)?;
+                Some((uuid, name))
+            })
+            .map(|(uuid, name)| (uuid.to_string(), name.to_string()))
+            .unwrap_or_else(|| (lib_uuid.clone(), lib_name.clone()));
+        let is_local = transport
+            .and_then(|value| value.get("library"))
+            .and_then(Value::as_str)
+            .map(local_library_exists)
+            .unwrap_or(false);
+        let is_local_i = i64::from(is_local);
         let description = tool_value
             .get("description")
             .and_then(Value::as_str)
@@ -585,7 +611,7 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
             PLUGIN_DB,
             &format!(
                 "SELECT uuid FROM plugin_functions WHERE lib_uuid = {} AND symbol = {} LIMIT 1",
-                quote(&lib_uuid),
+                quote(&tool_lib_uuid),
                 quote(symbol)
             ),
         )?;
@@ -596,10 +622,10 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                 &format!(
                     "UPDATE plugin_functions SET lib_name = {}, ffi_symbol = {}, title = {}, \
                      description = {}, category = {}, tags = {}, params_schema = {}, \
-                     return_schema = {}, is_local = 1, source = 'mcp.json', \
+                     return_schema = {}, is_local = {is_local_i}, source = 'mcp.json', \
                      updated_at = {timestamp} WHERE uuid = {}",
-                    quote(&lib_name),
-                    quote(symbol),
+                    quote(&tool_lib_name),
+                    quote(ffi_symbol),
                     quote(symbol),
                     quote(description),
                     quote(&category),
@@ -618,13 +644,13 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
                      ffi_symbol, title, description, category, tags, params_schema, \
                      return_schema, side_effects, exposed_mcp, is_local, embed_status, source, \
                      created_at, updated_at) \
-                     VALUES ({}, {}, {}, {}, 'post', {}, {}, {}, {}, {}, {}, {}, 0, 1, 1, 0, \
+                     VALUES ({}, {}, {}, {}, 'post', {}, {}, {}, {}, {}, {}, {}, 0, 1, {is_local_i}, 0, \
                      'mcp.json', {timestamp}, {timestamp})",
                     quote(&function_uuid),
-                    quote(&lib_uuid),
-                    quote(&lib_name),
+                    quote(&tool_lib_uuid),
+                    quote(&tool_lib_name),
                     quote(symbol),
-                    quote(symbol),
+                    quote(ffi_symbol),
                     quote(symbol),
                     quote(description),
                     quote(&category),
@@ -994,6 +1020,20 @@ fn import_chat_plugins(
         let Some(symbol) = tool_value.get("name").and_then(Value::as_str) else {
             continue;
         };
+        // 关联真实能力库：调用方按 library 加载 ./libary/<library>，
+        // 并调用 post_<ffiSymbol>。
+        let transport = tool_value.get("transport");
+        let library = transport
+            .and_then(|value| value.get("library"))
+            .and_then(Value::as_str)
+            .unwrap_or(name);
+        let library_uuid = transport
+            .and_then(|value| value.get("library_uuid"))
+            .and_then(Value::as_str);
+        let ffi_symbol = transport
+            .and_then(|value| value.get("ffiSymbol"))
+            .and_then(Value::as_str)
+            .unwrap_or("chat");
         let description = tool_value
             .get("description")
             .and_then(Value::as_str)
@@ -1003,9 +1043,9 @@ fn import_chat_plugins(
             "value": description,
             "text": format!("{symbol} {description}"),
             "meta": {
-                "plugin": name,
-                // chat 插件固定导出 post_chat；mcp tool 名只用于能力描述。
-                "ffi_symbol": "chat",
+                "plugin": library,
+                "ffi_symbol": ffi_symbol,
+                "library_uuid": library_uuid,
                 "tool": symbol,
                 "plugin_uuid": plugin_uuid,
                 "category": tool_value.get("category").and_then(Value::as_str).unwrap_or(""),
