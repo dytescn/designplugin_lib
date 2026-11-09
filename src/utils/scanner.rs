@@ -442,9 +442,26 @@ fn scan_libs(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
     Ok(count)
 }
 
+/// 返回 `mcp.json` 所在目录：优先包根，其次 `mcp/` 子目录。
+///
+/// 安装器通常把导出文件展平到包根；旧版安装或保留目录结构的包会放在
+/// `mcp/` 子目录，scan 需要同时兼容两种布局。
+fn mcp_root(package: &Path) -> Option<PathBuf> {
+    if package.join("mcp.json").is_file() {
+        return Some(package.to_path_buf());
+    }
+    let nested = package.join("mcp");
+    if nested.join("mcp.json").is_file() {
+        return Some(nested);
+    }
+    None
+}
+
 fn count_functions(package: &Path) -> i64 {
-    let path = package.join("mcp.json");
-    let Ok(text) = fs::read_to_string(path) else {
+    let Some(root) = mcp_root(package) else {
+        return 0;
+    };
+    let Ok(text) = fs::read_to_string(root.join("mcp.json")) else {
         return 0;
     };
     let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -470,11 +487,10 @@ fn upsert_category(category: &str, timestamp: i64) -> AppResult<()> {
 }
 
 fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
-    let mcp_path = package.join("mcp.json");
-    if !mcp_path.exists() {
+    let Some(root) = mcp_root(package) else {
         return Ok(0);
-    }
-
+    };
+    let mcp_path = root.join("mcp.json");
     let text = fs::read_to_string(&mcp_path)
         .map_err(|error| AppError::db(format!("读取 mcp.json 失败: {error}")))?;
     let value: Value = serde_json::from_str(&text)
@@ -527,7 +543,7 @@ fn scan_functions(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
             continue;
         }
 
-        let tool_path = package.join(file_name);
+        let tool_path = root.join(file_name);
         let Ok(tool_text) = fs::read_to_string(&tool_path) else {
             continue;
         };
@@ -939,10 +955,14 @@ fn import_chat_plugins(
     description: &str,
     sort: i64,
 ) -> AppResult<i64> {
-    let text = match fs::read_to_string(package.join("mcp.json")) {
-        Ok(text) => text,
-        Err(_) => return Ok(0),
+    let Some(root) = mcp_root(package) else {
+        return Err(AppError::db(format!(
+            "找不到 mcp.json（包根或 mcp/ 子目录）: {}",
+            package.display()
+        )));
     };
+    let text = fs::read_to_string(root.join("mcp.json"))
+        .map_err(|error| AppError::db(format!("读取 mcp.json 失败: {error}")))?;
     let value: Value = match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(error) => {
@@ -956,6 +976,7 @@ fn import_chat_plugins(
 
     let prefix = format!("{plugin_uuid}:");
     let mut items = Vec::new();
+    let mut missing = 0usize;
     for tool in tools {
         let Some(file_name) = tool.as_str() else {
             continue;
@@ -963,7 +984,8 @@ fn import_chat_plugins(
         if file_name.contains('/') || file_name.contains('\\') {
             continue;
         }
-        let Ok(text) = fs::read_to_string(package.join(file_name)) else {
+        let Ok(text) = fs::read_to_string(root.join(file_name)) else {
+            missing += 1;
             continue;
         };
         let Ok(tool_value) = serde_json::from_str::<Value>(&text) else {
@@ -994,7 +1016,13 @@ fn import_chat_plugins(
     }
 
     if items.is_empty() {
-        return Ok(0);
+        return Err(AppError::db(format!(
+            "mcp.json 中没有可读取的工具（目录 {}）",
+            root.display()
+        )));
+    }
+    if missing > 0 {
+        eprintln!("[scan] {name}: {missing} 个 MCP 工具文件读取失败");
     }
 
     kv::ensure_collection(collection, label, description, sort)?;
@@ -1010,6 +1038,23 @@ fn sha256_file(path: &Path) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_root_supports_flat_and_nested_layouts() {
+        let base = std::env::temp_dir().join(format!("plugin-scan-{}", Uuid::new_v4()));
+        let flat = base.join("flat");
+        let nested = base.join("nested");
+        fs::create_dir_all(&flat).unwrap();
+        fs::create_dir_all(nested.join("mcp")).unwrap();
+        fs::write(flat.join("mcp.json"), "{}").unwrap();
+        fs::write(nested.join("mcp").join("mcp.json"), "{}").unwrap();
+
+        assert_eq!(mcp_root(&flat), Some(flat.clone()));
+        assert_eq!(mcp_root(&nested), Some(nested.join("mcp")));
+        assert_eq!(mcp_root(&base.join("missing")), None);
+
+        let _ = fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn use_ai_from_manifest_accepts_supported_shapes() {

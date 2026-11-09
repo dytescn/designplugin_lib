@@ -4,14 +4,14 @@
 //! 可执行文件按以下顺序查找：
 //!
 //! 1. `DYTES_BIN` 环境变量；
-//! 2. 安装根目录下的 `dytes.exe` / `dytes`；
-//! 3. `PATH` 中的 `dytes.exe` / `dytes`。
+//! 2. 安装根目录下的 `dytes` / `dytes.exe` / `dytes.bin` / `dytes.app`；
+//! 3. `PATH` 中的同名命令。
 
 use crate::utils::error::{AppError, AppResult};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const NAMES: [&str; 2] = ["dytes.exe", "dytes"];
+const NAMES: [&str; 4] = ["dytes", "dytes.exe", "dytes.bin", "dytes.app"];
 
 /// 查找 `dytes` 可执行文件。
 pub fn executable(root: &Path) -> AppResult<PathBuf> {
