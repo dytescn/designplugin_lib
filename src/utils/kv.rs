@@ -95,22 +95,26 @@ pub fn ensure_collection(code: &str, name: &str, description: &str, sort: i64) -
     Ok(())
 }
 
-fn list_request(collection: &str, prefix: &str, page: usize) -> Value {
+fn list_values_request(collection: &str, prefix: &str, page: usize) -> Value {
     json!({
         "action": "list",
         "collection": collection,
         "prefix": prefix,
         "page": page,
         "page_size": LIST_PAGE_SIZE,
-        "with_value": false,
+        "with_value": true,
     })
 }
 
-fn list_keys(collection: &str, prefix: &str) -> AppResult<Vec<String>> {
-    let mut keys = Vec::new();
+/// 读取 `prefix` 下的记录 key 与 value（prompt 场景中 value 是 content）。
+pub fn list_records(collection: &str, prefix: &str) -> AppResult<Vec<(String, String)>> {
+    let mut records = Vec::new();
     let mut page = 1usize;
     loop {
-        let data = call("post_kv_record", list_request(collection, prefix, page))?;
+        let data = call(
+            "post_kv_record",
+            list_values_request(collection, prefix, page),
+        )?;
         let list = data
             .get("list")
             .and_then(Value::as_array)
@@ -118,16 +122,31 @@ fn list_keys(collection: &str, prefix: &str) -> AppResult<Vec<String>> {
             .unwrap_or_default();
         for item in &list {
             if let Some(key) = item.get("key").and_then(Value::as_str) {
-                keys.push(key.to_string());
+                let value = match item.get("value") {
+                    Some(Value::String(value)) => value.clone(),
+                    Some(value) => value.to_string(),
+                    None => String::new(),
+                };
+                records.push((key.to_string(), value));
             }
         }
         let total = data.get("total").and_then(Value::as_i64).unwrap_or(0) as usize;
-        if list.is_empty() || keys.len() >= total {
+        if list.is_empty() || records.len() >= total {
             break;
         }
         page += 1;
     }
-    Ok(keys)
+    Ok(records)
+}
+
+/// 批量写入记录，`items` 使用 kv_lib 的 `{key,value,text,meta,rank,force}` 结构。
+pub fn put_records(collection: &str, items: &[Value]) -> AppResult<()> {
+    put_items(collection, items)
+}
+
+/// 批量删除 key。
+pub fn delete_records(collection: &str, keys: &[String]) -> AppResult<()> {
+    delete_keys(collection, keys)
 }
 
 fn delete_keys(collection: &str, keys: &[String]) -> AppResult<()> {
@@ -165,25 +184,4 @@ fn put_items(collection: &str, items: &[Value]) -> AppResult<()> {
     Ok(())
 }
 
-/// 用 `items` 替换 `prefix` 下的全部记录，保证重扫幂等。
-pub fn replace_records(collection: &str, prefix: &str, items: &[Value]) -> AppResult<usize> {
-    let old = list_keys(collection, prefix)?;
-    if !old.is_empty() {
-        delete_keys(collection, &old)?;
-    }
-    put_items(collection, items)?;
-    Ok(items.len())
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn list_request_uses_kv_lib_page_limit() {
-        let request = list_request("chat_think", "prefix:", 2);
-        assert_eq!(request["page"], 2);
-        assert_eq!(request["page_size"], 100);
-        assert!(request["page_size"].as_u64().unwrap() <= 100);
-    }
-}

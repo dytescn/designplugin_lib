@@ -1,11 +1,9 @@
 pub mod cjson;
-pub mod config;
 pub mod db;
 pub mod designdb;
-pub mod dytes;
 pub mod error;
-pub mod installer;
 pub mod kv;
+pub mod package;
 pub mod plugin;
-pub mod scanner;
-pub mod updates;
+pub mod prompts;
+pub mod taskflow;

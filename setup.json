@@ -10,7 +10,7 @@
       },
       "body": {
         "path": "./plugins",
-        "sql": "CREATE TABLE IF NOT EXISTS plugins (\n      id           INTEGER PRIMARY KEY AUTOINCREMENT,\n      uuid         TEXT UNIQUE NOT NULL,\n      ouid         TEXT,\n      flow_uid     TEXT,\n      type_uid     TEXT,\n      category_id  TEXT,\n      name         TEXT,\n      \"desc\"       TEXT,\n      create_by    TEXT,\n      cover        TEXT,\n      status       TEXT DEFAULT 'draft',\n      public       INTEGER DEFAULT 0,\n      updated_by   TEXT,\n      created_at   INTEGER,\n      updated_at   INTEGER,\n      deleted_at   INTEGER,\n      installed    INTEGER DEFAULT 0,\n      install_path TEXT,\n      enabled      INTEGER DEFAULT 1,\n      plugin_type  TEXT DEFAULT 'dll',\n      target       TEXT DEFAULT 'common',\n      use_ai       INTEGER NOT NULL DEFAULT 0\n    )"
+        "sql": "CREATE TABLE IF NOT EXISTS plugins (\n      uuid         TEXT PRIMARY KEY NOT NULL,\n      ouid         TEXT,\n      plugins_type TEXT,\n      version      TEXT,\n      name         TEXT,\n      \"desc\"       TEXT,\n      create_by    TEXT,\n      cover        TEXT,\n      status       TEXT DEFAULT 'draft',\n      public       INTEGER DEFAULT 0,\n      updated_by   TEXT,\n      created_at   INTEGER,\n      updated_at   INTEGER,\n      deleted_at   INTEGER,\n      installed    INTEGER DEFAULT 0,\n      install_path TEXT,\n      enabled      INTEGER DEFAULT 1,\n      target       TEXT DEFAULT 'common',\n      platform     TEXT NOT NULL DEFAULT 'win',\n      use_ai       INTEGER NOT NULL DEFAULT 0,\n      mask         INTEGER NOT NULL DEFAULT 0\n    )"
       }
     },
     {
@@ -94,110 +94,7 @@
       },
       "body": {
         "path": "./plugins",
-        "sql": "CREATE TABLE IF NOT EXISTS plugin_functions (\n      id              INTEGER PRIMARY KEY AUTOINCREMENT,\n      uuid            TEXT UNIQUE NOT NULL,\n      lib_uuid        TEXT NOT NULL,\n      lib_name        TEXT NOT NULL,\n      symbol          TEXT NOT NULL,\n      method          TEXT NOT NULL DEFAULT 'post',\n      ffi_symbol      TEXT NOT NULL,\n      title           TEXT NOT NULL,\n      description     TEXT NOT NULL,\n      category        TEXT,\n      params_schema   TEXT NOT NULL,\n      params_example  TEXT,\n      return_schema   TEXT NOT NULL,\n      return_example  TEXT,\n      error_codes     TEXT,\n      side_effects    INTEGER DEFAULT 0,\n      exposed_mcp     INTEGER DEFAULT 1,\n      is_local        INTEGER DEFAULT 0,\n      use_ai          INTEGER DEFAULT 1,\n      embed_status    INTEGER DEFAULT 0,\n      embed_model     TEXT,\n      embed_text_hash TEXT,\n      embedded_at     INTEGER,\n      source          TEXT,\n      source_hash     TEXT,\n      created_at      INTEGER,\n      updated_at      INTEGER,\n      UNIQUE(lib_uuid, symbol)\n    )"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "ALTER TABLE plugins ADD COLUMN installed INTEGER DEFAULT 0"
-      },
-      "allow_error": true
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "ALTER TABLE plugins ADD COLUMN install_path TEXT"
-      },
-      "allow_error": true
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "ALTER TABLE plugins ADD COLUMN enabled INTEGER DEFAULT 1"
-      },
-      "allow_error": true
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "ALTER TABLE plugins ADD COLUMN plugin_type TEXT DEFAULT 'dll'"
-      },
-      "allow_error": true
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "ALTER TABLE plugins ADD COLUMN target TEXT DEFAULT 'common'"
-      },
-      "allow_error": true
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "ALTER TABLE plugins ADD COLUMN use_ai INTEGER NOT NULL DEFAULT 0"
-      },
-      "allow_error": true
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "ALTER TABLE plugin_functions ADD COLUMN use_ai INTEGER DEFAULT 1"
-      },
-      "allow_error": true
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugins_category ON plugins(category_id)"
+        "sql": "CREATE TABLE IF NOT EXISTS plugin_functions (\n      uuid           TEXT PRIMARY KEY NOT NULL,\n      plugin_uuid    TEXT NOT NULL,\n      ffi_symbol     TEXT NOT NULL,\n      title          TEXT NOT NULL,\n      description    TEXT NOT NULL,\n      params_schema  TEXT NOT NULL,\n      params_example TEXT,\n      return_schema  TEXT NOT NULL,\n      return_example TEXT,\n      use_ai         INTEGER NOT NULL DEFAULT 0,\n      created_at     INTEGER,\n      updated_at     INTEGER\n    )"
       }
     },
     {
@@ -341,67 +238,7 @@
       },
       "body": {
         "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_lib ON plugin_functions(lib_uuid)"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_lookup ON plugin_functions(lib_name, ffi_symbol)"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "DROP INDEX IF EXISTS idx_plugin_functions_local"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_local ON plugin_functions(is_local, embed_status, use_ai)"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_status ON plugin_functions(embed_status)"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_cat ON plugin_functions(category)"
+        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_functions_lookup ON plugin_functions(ffi_symbol)"
       }
     },
     {
@@ -427,78 +264,6 @@
       "body": {
         "path": "./plugins",
         "sql": "CREATE TABLE IF NOT EXISTS skill_categories (\n      code        TEXT PRIMARY KEY NOT NULL,\n      name        TEXT NOT NULL DEFAULT '',\n      description TEXT NOT NULL DEFAULT '',\n      sort        INTEGER NOT NULL DEFAULT 0,\n      created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n    )"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE TABLE IF NOT EXISTS skills (\n      id            TEXT PRIMARY KEY NOT NULL,\n      name          TEXT NOT NULL DEFAULT '',\n      description   TEXT NOT NULL DEFAULT '',\n      category      TEXT NOT NULL DEFAULT 'General',\n      content       TEXT NOT NULL DEFAULT '',\n      trigger       TEXT,\n      params_schema TEXT,\n      is_system     INTEGER NOT NULL DEFAULT 0,\n      is_enabled    INTEGER NOT NULL DEFAULT 1,\n      sort          INTEGER NOT NULL DEFAULT 0,\n      version       INTEGER NOT NULL DEFAULT 1,\n      created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n    )"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_skills_category_sort ON skills(category, sort)"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_skills_enabled ON skills(is_enabled)"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE TABLE IF NOT EXISTS plugin_skills (\n      plugin_uuid TEXT NOT NULL,\n      skill_id    TEXT NOT NULL,\n      version     INTEGER NOT NULL DEFAULT 1,\n      is_owned    INTEGER NOT NULL DEFAULT 1,\n      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,\n      UNIQUE(plugin_uuid, skill_id)\n    )"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_skills_plugin ON plugin_skills(plugin_uuid)"
-      }
-    },
-    {
-      "url": "http://127.0.0.1:44944/database",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/libary",
-        "FFI-Symbol": "db_update"
-      },
-      "body": {
-        "path": "./plugins",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_plugin_skills_skill ON plugin_skills(skill_id)"
       }
     },
     {

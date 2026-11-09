@@ -1,8 +1,10 @@
-//! `libdesigndb.dll` 的 dlopen 封装：保存技能完整内容。
+//! `libdesigndb.dll` 的 dlopen 封装：skills、prompts 与 taskflow 对象集。
 //!
-//! 技能索引 / 基础信息在 `plugins.db.skills`，完整 `skills.json` 的每一条技能
-//! 以 `_id = skill.id` 写入 `./designdb/skills` 的 `skills` 集合，供回读与迁移。
-//! 该库缺失或写入失败时不阻断 scan / install（调用方按 best-effort 处理）。
+//! - `skills`：每条文档一个技能，通过 `plugin_uuid` 关联所属插件。
+//! - `prompts`：每个 `plugin_uuid` 一条文档，文档的 `prompts` 字段直接是数组。
+//! - `taskflow`：整个集合一条文档，`taskflows` 字段直接是数组。
+//!
+//! 各类对象集的 `path` 与 `collection` 都与名称一致，整个项目各只使用一个。
 
 use crate::utils::error::{AppError, AppResult};
 use libloading::Library;
@@ -10,6 +12,7 @@ use serde_json::{Value, json};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 const DESIGNDB_LIB: &str = "./libary/libdesigndb.dll";
@@ -18,9 +21,19 @@ const DESIGNDB_LIB: &str = "./libary/libdesigndb.so";
 #[cfg(target_os = "macos")]
 const DESIGNDB_LIB: &str = "./libary/libdesigndb.dylib";
 
+/// 与 designdb 的 `write_json_out` 保持一致。
 const OUT_BUF_SIZE: usize = 65536;
-const PATH: &str = "skills";
-const COLLECTION: &str = "skills";
+
+pub const SKILLS_PATH: &str = "skills";
+pub const SKILLS_COLLECTION: &str = "skills";
+pub const PROMPTS_PATH: &str = "prompts";
+pub const PROMPTS_COLLECTION: &str = "prompts";
+pub const TASKFLOW_PATH: &str = "taskflow";
+pub const TASKFLOW_COLLECTION: &str = "taskflow";
+pub const TASKFLOW_ID: &str = "taskflow";
+
+/// designdb 单次响应上限 64 KiB，分页扫描时取 20 条留出余量。
+const SCAN_PAGE_SIZE: u64 = 20;
 
 type FfiFn = unsafe extern "C" fn(*const c_char, *mut c_char) -> c_int;
 
@@ -72,59 +85,211 @@ fn call(symbol: &str, request: Value) -> AppResult<Value> {
     Ok(value)
 }
 
-/// 写入 / 覆盖一条技能完整内容；`_id` 使用技能 id。
-pub fn upsert_skill(skill: &Value) -> AppResult<()> {
-    let id = skill
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if id.is_empty() {
-        return Err(AppError::param("技能缺少 id"));
-    }
+fn data_array(value: &Value) -> Vec<Value> {
+    value
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
 
-    let doc = json!({
-        "_id": id,
-        "id": id,
-        "name": skill.get("name").cloned().unwrap_or(Value::Null),
-        "description": skill.get("description").cloned().unwrap_or(Value::Null),
-        "category": skill.get("category").cloned().unwrap_or(Value::Null),
-        "content": skill.get("content").cloned().unwrap_or(Value::Null),
-        "trigger": skill.get("trigger").cloned().unwrap_or(Value::Null),
-        "params_schema": skill.get("params_schema").cloned().unwrap_or(Value::Null),
-        "is_system": skill.get("is_system").cloned().unwrap_or(json!(0)),
-        "is_enabled": skill.get("is_enabled").cloned().unwrap_or(json!(1)),
-        "sort": skill.get("sort").cloned().unwrap_or(json!(0)),
-        "version": skill.get("version").cloned().unwrap_or(json!(1)),
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn query_at(
+    path: &str,
+    collection: &str,
+    filter: Value,
+    sort: Option<Value>,
+    skip: Option<u64>,
+    limit: Option<u64>,
+) -> AppResult<Vec<Value>> {
+    let mut request = json!({
+        "path": path,
+        "collection": collection,
+        "filter": filter,
     });
+    if let Some(sort) = sort {
+        request["sort"] = sort;
+    }
+    if let Some(skip) = skip {
+        request["skip"] = json!(skip);
+    }
+    if let Some(limit) = limit {
+        request["limit"] = json!(limit);
+    }
+    Ok(data_array(&call("post_db_query", request)?))
+}
 
-    // 先删后插，避免依赖 update 的局部更新语义。
-    let _ = call(
-        "post_db_delete",
-        json!({ "path": PATH, "collection": COLLECTION, "filter": { "_id": id } }),
-    );
+fn query_all_at(path: &str, collection: &str, filter: Value) -> AppResult<Vec<Value>> {
+    let mut all = Vec::new();
+    let mut skip = 0u64;
+    loop {
+        let batch = query_at(
+            path,
+            collection,
+            filter.clone(),
+            Some(json!({ "_id": 1 })),
+            Some(skip),
+            Some(SCAN_PAGE_SIZE),
+        )?;
+        let count = batch.len();
+        all.extend(batch);
+        if count < SCAN_PAGE_SIZE as usize {
+            break;
+        }
+        skip += SCAN_PAGE_SIZE;
+    }
+    Ok(all)
+}
+
+fn query_one_at(path: &str, collection: &str, filter: Value) -> AppResult<Option<Value>> {
+    Ok(query_at(path, collection, filter, None, None, Some(1))?
+        .into_iter()
+        .next())
+}
+
+fn insert_at(path: &str, collection: &str, doc: Value) -> AppResult<()> {
     call(
         "post_db_insert",
-        json!({ "path": PATH, "collection": COLLECTION, "doc": doc }),
+        json!({
+            "path": path,
+            "collection": collection,
+            "doc": doc,
+        }),
     )?;
     Ok(())
 }
 
-/// 读取一条技能完整内容；不存在时返回 `None`。
-pub fn get_skill_doc(id: &str) -> AppResult<Option<Value>> {
-    let value = call(
-        "post_db_query",
+fn update_at(path: &str, collection: &str, filter: Value, update: Value) -> AppResult<()> {
+    call(
+        "post_db_update",
         json!({
-            "path": PATH,
-            "collection": COLLECTION,
-            "filter": { "_id": id },
-            "limit": 1,
+            "path": path,
+            "collection": collection,
+            "filter": filter,
+            "update": update,
         }),
     )?;
-    Ok(value
-        .get("data")
-        .and_then(Value::as_array)
-        .and_then(|list| list.first())
-        .cloned())
+    Ok(())
+}
+
+fn delete_at(path: &str, collection: &str, filter: Value) -> AppResult<()> {
+    call(
+        "post_db_delete",
+        json!({
+            "path": path,
+            "collection": collection,
+            "filter": filter,
+        }),
+    )?;
+    Ok(())
+}
+
+/// 按过滤条件查询技能文档；`sort` / `skip` / `limit` 为空时不传给 designdb。
+pub fn query(
+    filter: Value,
+    sort: Option<Value>,
+    skip: Option<u64>,
+    limit: Option<u64>,
+) -> AppResult<Vec<Value>> {
+    query_at(SKILLS_PATH, SKILLS_COLLECTION, filter, sort, skip, limit)
+}
+
+/// 分页读取全部匹配的技能文档，避免单次响应超过 64 KiB。
+pub fn query_all(filter: Value) -> AppResult<Vec<Value>> {
+    query_all_at(SKILLS_PATH, SKILLS_COLLECTION, filter)
+}
+
+/// 读取第一条匹配的技能文档。
+pub fn query_one(filter: Value) -> AppResult<Option<Value>> {
+    query_one_at(SKILLS_PATH, SKILLS_COLLECTION, filter)
+}
+
+pub fn insert(doc: Value) -> AppResult<()> {
+    insert_at(SKILLS_PATH, SKILLS_COLLECTION, doc)
+}
+
+pub fn update(filter: Value, update: Value) -> AppResult<()> {
+    update_at(SKILLS_PATH, SKILLS_COLLECTION, filter, update)
+}
+
+pub fn delete(filter: Value) -> AppResult<()> {
+    delete_at(SKILLS_PATH, SKILLS_COLLECTION, filter)
+}
+
+/// 读取一条技能文档；不存在时返回 `None`。
+pub fn get_skill_doc(id: &str) -> AppResult<Option<Value>> {
+    query_one(json!({ "_id": id }))
+}
+
+/// 读取某个插件的提示词文档；不存在时返回 `None`。
+pub fn get_prompts_doc(plugin_uuid: &str) -> AppResult<Option<Value>> {
+    query_one_at(
+        PROMPTS_PATH,
+        PROMPTS_COLLECTION,
+        json!({ "_id": plugin_uuid }),
+    )
+}
+
+/// 整体写入某个插件的提示词数组：不存在则新增，存在则覆盖。
+pub fn set_prompts_doc(plugin_uuid: &str, prompts: Vec<Value>) -> AppResult<()> {
+    let timestamp = now();
+    let existing = get_prompts_doc(plugin_uuid)?;
+
+    match existing {
+        Some(_) => update_at(
+            PROMPTS_PATH,
+            PROMPTS_COLLECTION,
+            json!({ "_id": plugin_uuid }),
+            json!({ "$set": { "prompts": prompts, "updated_at": timestamp } }),
+        ),
+        None => insert_at(
+            PROMPTS_PATH,
+            PROMPTS_COLLECTION,
+            json!({
+                "_id": plugin_uuid,
+                "plugin_uuid": plugin_uuid,
+                "prompts": prompts,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }),
+        ),
+    }
+}
+
+/// 读取任务流文档；不存在时返回 `None`。
+pub fn get_taskflow_doc() -> AppResult<Option<Value>> {
+    query_one_at(
+        TASKFLOW_PATH,
+        TASKFLOW_COLLECTION,
+        json!({ "_id": TASKFLOW_ID }),
+    )
+}
+
+/// 整体写入任务流数组：不存在则新增，存在则覆盖。
+pub fn set_taskflow_doc(taskflows: Vec<Value>) -> AppResult<()> {
+    let timestamp = now();
+    match get_taskflow_doc()? {
+        Some(_) => update_at(
+            TASKFLOW_PATH,
+            TASKFLOW_COLLECTION,
+            json!({ "_id": TASKFLOW_ID }),
+            json!({ "$set": { "taskflows": taskflows, "updated_at": timestamp } }),
+        ),
+        None => insert_at(
+            TASKFLOW_PATH,
+            TASKFLOW_COLLECTION,
+            json!({
+                "_id": TASKFLOW_ID,
+                "taskflows": taskflows,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }),
+        ),
+    }
 }

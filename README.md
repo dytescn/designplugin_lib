@@ -4,7 +4,7 @@
 
 - 对 `plugin_ui` 提供插件、分类、版本、配置、安装状态、动态库与 FFI 能力的 `get / post / update / patch`；
 - 通过 `dlopen` 加载 `./libary/database.dll` 读写 `./database/plugins.db`（不直接链接 SQLite）；
-- 技能完整内容通过 `./libary/libdesigndb.dll` 写入 `./designdb/skills`（best-effort，缺库不影响安装/扫描）；
+- 技能以对象文档存放在 `./designdb/skills` 的 `skills` 集合中（每条技能一个文档，带 `plugin_uuid`），增删改由 FFI 直接写入；
 - 不负责设计软件的发现 / 启动 / 运行状态（由 `designsoft` 独立负责）；
 - 不提供向量表与语义检索（归 `chatllm`），只提供能力清单与向量化状态。
 

@@ -3,6 +3,9 @@
 //! 约定（见 `funxdata/database`）：请求 `{path, sql}`，响应 `{code, data, msg}`；
 //! `path` 是库名，实际文件为 `./database/<name>.db`。
 
+/// 插件库名；`database` 服务中对应 `./database/plugins.db`。
+pub const PLUGIN_DB: &str = "./plugins";
+
 use crate::utils::cjson::OUT_BUF_SIZE;
 use crate::utils::error::{AppError, AppResult};
 use libloading::{Library, Symbol};
@@ -129,14 +132,6 @@ pub fn quote_opt(value: Option<&str>) -> String {
     }
 }
 
-/// 可空整数：`NULL` 或数字。
-pub fn int_opt(value: Option<i64>) -> String {
-    match value {
-        Some(v) => v.to_string(),
-        None => "NULL".to_string(),
-    }
-}
-
 /// LIKE 模式：转义 `%`、`_`、`\` 与单引号，调用方负责追加 `ESCAPE '\'`。
 pub fn like_pattern(value: &str) -> String {
     let escaped = value
@@ -165,7 +160,6 @@ mod tests {
     fn quote_escapes_single_quotes() {
         assert_eq!(quote("a'b"), "'a''b'");
         assert_eq!(quote_opt(None), "NULL");
-        assert_eq!(int_opt(Some(3)), "3");
     }
 
     #[test]

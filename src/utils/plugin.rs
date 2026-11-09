@@ -3,20 +3,18 @@
 //! 全部 SQL 在 Rust 内拼装并转义单引号；不直接链接 SQLite。
 //! 删除 / 安装 / 扫描属于 M4，本模块先覆盖 M0–M3 的 CRUD。
 
+use crate::ffi::types::{
+    DeletePluginReq, GetPluginReq, GetPluginsReq, PatchPluginReq, PostPluginReq, UpdatePluginReq,
+};
 use crate::utils::cjson::flag;
-use crate::utils::config::{self, PLUGIN_DB};
-use crate::utils::db::{self, int_opt, like_pattern, quote, quote_opt, query_i64};
+use crate::utils::db::{self, like_pattern, quote, quote_opt, query_i64, PLUGIN_DB};
+use crate::utils::designdb;
 use crate::utils::error::{AppError, AppResult};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use crate::utils::config::plugin_dir;
-
 const PLUGIN_STATUSES: &[&str] = &["draft", "review", "published", "offline", "deprecated"];
-const INSTALL_STATUSES: &[&str] = &["installing", "installed", "running", "stopped", "broken"];
-const EMBED_STATUSES: &[i64] = &[0, 1, 2, 3];
 const MAX_SKILL_NAME_CHARS: usize = 120;
 const MAX_SKILL_DESCRIPTION_CHARS: usize = 500;
 const MAX_SKILL_CONTENT_CHARS: usize = 8000;
@@ -116,10 +114,6 @@ fn validate_skill_fields(
     Ok(())
 }
 
-fn as_i64(row: &Value, key: &str) -> i64 {
-    row.get(key).and_then(Value::as_i64).unwrap_or(0)
-}
-
 fn as_str<'a>(row: &'a Value, key: &str) -> Option<&'a str> {
     row.get(key).and_then(Value::as_str)
 }
@@ -138,36 +132,6 @@ fn require_plugin(uuid: &str) -> AppResult<Value> {
     )
 }
 
-/// `version`（字符串）或 `version_id`（数字）→ `plugin_configs.version_id`。
-/// 未指定时为 0（通用配置）。
-fn resolve_version_id(
-    plugin_uuid: &str,
-    version_id: Option<i64>,
-    version: Option<&str>,
-) -> AppResult<i64> {
-    if let Some(id) = version_id {
-        return Ok(id);
-    }
-
-    let Some(version) = version.filter(|v| !v.is_empty()) else {
-        return Ok(0);
-    };
-
-    let rows = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT id FROM plugin_versions WHERE plugin_uuid = {} AND version = {} LIMIT 1",
-            quote(plugin_uuid),
-            quote(version),
-        ),
-    )?;
-
-    rows.first()
-        .and_then(|row| row.get("id"))
-        .and_then(Value::as_i64)
-        .ok_or_else(|| AppError::not_found(format!("版本不存在: {version}")))
-}
-
 /// 把 TEXT 列的 JSON 内容还原成对象 / 数组，便于前端直接消费。
 fn expand_json_fields(row: &mut Value, fields: &[&str]) {
     let Some(obj) = row.as_object_mut() else {
@@ -184,14 +148,7 @@ fn expand_json_fields(row: &mut Value, fields: &[&str]) {
     }
 }
 
-fn value_text(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
+#[cfg(test)]
 fn int_list(value: &Option<Value>) -> Option<Vec<i64>> {
     let value = value.as_ref()?;
     match value {
@@ -212,119 +169,21 @@ fn int_list(value: &Option<Value>) -> Option<Vec<i64>> {
     }
 }
 
-fn latest_installs(uuids: &[String]) -> AppResult<HashMap<String, Value>> {
-    if uuids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let in_list = uuids.iter().map(|u| quote(u)).collect::<Vec<_>>().join(", ");
-    let rows = db::query(
-        PLUGIN_DB,
-        &format!("SELECT * FROM plugin_installs WHERE plugin_uuid IN ({in_list}) ORDER BY id DESC"),
-    )?;
-
-    let mut map = HashMap::new();
-    for row in rows {
-        if let Some(uuid) = as_str(&row, "plugin_uuid") {
-            map.entry(uuid.to_string()).or_insert(row);
-        }
-    }
-
-    Ok(map)
-}
-
 // ---------------------------------------------------------------------------
 // 请求结构
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetPluginsReq {
-    #[serde(default, alias = "category_id")]
-    pub category: Option<String>,
-    #[serde(default)]
-    pub keyword: Option<String>,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default)]
-    pub target: Option<String>,
-    #[serde(default)]
-    pub page: Option<u32>,
-    #[serde(default)]
-    pub page_size: Option<u32>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetPluginReq {
-    #[serde(default)]
-    pub uuid: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetCategoriesReq {
-    #[serde(default)]
-    pub parent_uuid: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetVersionsReq {
-    #[serde(default)]
-    pub plugin_uuid: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetConfigsReq {
-    #[serde(default)]
-    pub plugin_uuid: String,
-    #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default)]
-    pub version_id: Option<i64>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetInstallReq {
-    #[serde(default)]
-    pub plugin_uuid: String,
-    #[serde(default)]
-    pub version: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetLibsReq {
-    #[serde(default)]
-    pub plugin_uuid: Option<String>,
-    #[serde(default)]
-    pub local: Option<Value>,
-}
 
 #[derive(Debug, Default, Deserialize)]
 pub struct GetFunctionsReq {
     #[serde(default)]
     pub uuids: Option<Vec<String>>,
     #[serde(default)]
-    pub lib_uuid: Option<String>,
-    #[serde(default)]
-    pub lib_name: Option<String>,
-    #[serde(default)]
     pub plugin_uuid: Option<String>,
-    #[serde(default)]
-    pub local: Option<Value>,
-    #[serde(default)]
-    pub use_ai: Option<Value>,
-    #[serde(default)]
-    pub embed_status: Option<Value>,
-    #[serde(default)]
-    pub category: Option<String>,
     #[serde(default)]
     pub page: Option<u32>,
     #[serde(default)]
     pub page_size: Option<u32>,
 }
-
-#[derive(Debug, Default, Deserialize)]
-pub struct GetSkillCategoriesReq {}
 
 #[derive(Debug, Default, Deserialize)]
 pub struct GetSkillsReq {
@@ -351,241 +210,51 @@ pub struct GetSkillReq {
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct PostPluginReq {
-    #[serde(default)]
-    pub uuid: Option<String>,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub ouid: Option<String>,
-    #[serde(default)]
-    pub flow_uid: Option<String>,
-    #[serde(default)]
-    pub type_uid: Option<String>,
-    #[serde(default)]
-    pub category_id: Option<String>,
-    #[serde(default, rename = "desc")]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub create_by: Option<String>,
-    #[serde(default)]
-    pub cover: Option<String>,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default, rename = "public")]
-    pub public_flag: Option<i64>,
-    #[serde(default)]
-    pub updated_by: Option<String>,
-    #[serde(default)]
-    pub plugin_type: Option<String>,
-    #[serde(default)]
-    pub target: Option<String>,
-    #[serde(default)]
-    pub enabled: Option<i64>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct PostCategoryReq {
-    #[serde(default)]
-    pub uuid: Option<String>,
-    #[serde(default)]
-    pub type_name: String,
-    #[serde(default)]
-    pub icon: Option<String>,
-    #[serde(default)]
-    pub parent_uuid: Option<String>,
-    #[serde(default)]
-    pub sort_order: Option<i64>,
-    #[serde(default)]
-    pub created_by: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct PostVersionReq {
-    #[serde(default)]
-    pub plugin_uuid: String,
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
-    pub changelog: Option<String>,
-    #[serde(default)]
-    pub file_path: Option<String>,
-    #[serde(default)]
-    pub file_size: Option<i64>,
-    #[serde(default)]
-    pub file_hash: Option<String>,
-    #[serde(default)]
-    pub file_type: Option<String>,
-    #[serde(default)]
-    pub min_engine_ver: Option<String>,
-    #[serde(default)]
-    pub max_engine_ver: Option<String>,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default)]
-    pub is_latest: Option<Value>,
-    #[serde(default)]
-    pub created_by: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct PostConfigReq {
-    #[serde(default)]
-    pub plugin_uuid: String,
-    #[serde(default)]
-    pub param_key: String,
-    #[serde(default)]
-    pub version_id: Option<i64>,
-    #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default)]
-    pub param_type: Option<String>,
-    #[serde(default)]
-    pub default_value: Option<String>,
-    #[serde(default)]
-    pub required: Option<Value>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub options: Option<String>,
-    #[serde(default)]
-    pub sort_order: Option<i64>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct UpdatePluginReq {
+pub struct PostFunctionReq {
     #[serde(default)]
     pub uuid: String,
     #[serde(default)]
-    pub name: String,
+    pub plugin_uuid: String,
     #[serde(default)]
-    pub ouid: Option<String>,
+    pub ffi_symbol: String,
     #[serde(default)]
-    pub flow_uid: Option<String>,
+    pub title: String,
     #[serde(default)]
-    pub type_uid: Option<String>,
+    pub description: String,
     #[serde(default)]
-    pub category_id: Option<String>,
-    #[serde(default, rename = "desc")]
-    pub description: Option<String>,
+    pub params_schema: Option<Value>,
     #[serde(default)]
-    pub create_by: Option<String>,
+    pub params_example: Option<Value>,
     #[serde(default)]
-    pub cover: Option<String>,
+    pub return_schema: Option<Value>,
     #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default, rename = "public")]
-    pub public_flag: Option<i64>,
+    pub return_example: Option<Value>,
     #[serde(default)]
-    pub updated_by: Option<String>,
-    #[serde(default)]
-    pub plugin_type: Option<String>,
-    #[serde(default)]
-    pub target: Option<String>,
+    pub use_ai: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct UpdateCategoryReq {
+pub struct UpdateFunctionReq {
     #[serde(default)]
     pub uuid: String,
     #[serde(default)]
-    pub type_name: String,
-    #[serde(default)]
-    pub icon: Option<String>,
-    #[serde(default)]
-    pub parent_uuid: Option<String>,
-    #[serde(default)]
-    pub sort_order: Option<i64>,
-    #[serde(default)]
-    pub updated_by: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct UpdateVersionReq {
-    #[serde(default)]
-    pub id: i64,
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
-    pub changelog: Option<String>,
-    #[serde(default)]
-    pub file_path: Option<String>,
-    #[serde(default)]
-    pub file_size: Option<i64>,
-    #[serde(default)]
-    pub file_hash: Option<String>,
-    #[serde(default)]
-    pub file_type: Option<String>,
-    #[serde(default)]
-    pub min_engine_ver: Option<String>,
-    #[serde(default)]
-    pub max_engine_ver: Option<String>,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default)]
-    pub is_latest: Option<Value>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct UpdateConfigReq {
-    #[serde(default)]
-    pub id: i64,
-    #[serde(default)]
-    pub param_key: String,
-    #[serde(default)]
-    pub param_type: Option<String>,
-    #[serde(default)]
-    pub default_value: Option<String>,
-    #[serde(default)]
-    pub required: Option<Value>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub options: Option<String>,
-    #[serde(default)]
-    pub sort_order: Option<i64>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct PatchPluginReq {
-    #[serde(default)]
-    pub uuid: String,
-    #[serde(default)]
-    pub enabled: Option<Value>,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default)]
-    pub category_id: Option<String>,
-    #[serde(default)]
-    pub cover: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct PatchInstallReq {
-    #[serde(default)]
     pub plugin_uuid: String,
     #[serde(default)]
-    pub version: Option<String>,
+    pub ffi_symbol: String,
     #[serde(default)]
-    pub status: Option<String>,
+    pub title: String,
     #[serde(default)]
-    pub install_path: Option<String>,
+    pub description: String,
     #[serde(default)]
-    pub enabled: Option<Value>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct PatchConfigReq {
+    pub params_schema: Option<Value>,
     #[serde(default)]
-    pub plugin_uuid: String,
+    pub params_example: Option<Value>,
     #[serde(default)]
-    pub key: String,
+    pub return_schema: Option<Value>,
     #[serde(default)]
-    pub value: Value,
+    pub return_example: Option<Value>,
     #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default)]
-    pub version_id: Option<i64>,
+    pub use_ai: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -593,15 +262,29 @@ pub struct PatchFunctionReq {
     #[serde(default)]
     pub uuid: String,
     #[serde(default)]
+    pub plugin_uuid: Option<String>,
+    #[serde(default)]
+    pub ffi_symbol: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub params_schema: Option<Value>,
+    #[serde(default)]
+    pub params_example: Option<Value>,
+    #[serde(default)]
+    pub return_schema: Option<Value>,
+    #[serde(default)]
+    pub return_example: Option<Value>,
+    #[serde(default)]
     pub use_ai: Option<Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DeleteFunctionReq {
     #[serde(default)]
-    pub embed_status: Option<Value>,
-    #[serde(default)]
-    pub embed_model: Option<String>,
-    #[serde(default)]
-    pub embed_text_hash: Option<String>,
-    #[serde(default)]
-    pub embedded_at: Option<i64>,
+    pub uuid: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -613,9 +296,6 @@ pub fn get_plugins(req: GetPluginsReq) -> AppResult<Value> {
 
     let mut conditions = vec!["deleted_at IS NULL".to_string()];
 
-    if let Some(category) = req.category.as_deref().filter(|v| !v.is_empty()) {
-        conditions.push(format!("category_id = {}", quote(category)));
-    }
     if let Some(keyword) = req.keyword.as_deref().filter(|v| !v.is_empty()) {
         let pattern = like_pattern(keyword);
         conditions.push(format!(
@@ -628,6 +308,9 @@ pub fn get_plugins(req: GetPluginsReq) -> AppResult<Value> {
     if let Some(target) = req.target.as_deref().filter(|v| !v.is_empty()) {
         conditions.push(format!("target = {}", quote(target)));
     }
+    if let Some(platform) = req.platform.as_deref().filter(|v| !v.is_empty()) {
+        conditions.push(format!("platform = {}", quote(platform)));
+    }
 
     let where_sql = format!(" WHERE {}", conditions.join(" AND "));
 
@@ -637,24 +320,12 @@ pub fn get_plugins(req: GetPluginsReq) -> AppResult<Value> {
         "total",
     )?;
 
-    let mut list = db::query(
+    let list = db::query(
         PLUGIN_DB,
-        &format!("SELECT * FROM plugins{where_sql} ORDER BY id DESC LIMIT {page_size} OFFSET {offset}"),
+        &format!(
+            "SELECT * FROM plugins{where_sql} ORDER BY created_at DESC LIMIT {page_size} OFFSET {offset}"
+        ),
     )?;
-
-    let uuids: Vec<String> = list
-        .iter()
-        .filter_map(|row| as_str(row, "uuid").map(ToString::to_string))
-        .collect();
-    let installs = latest_installs(&uuids)?;
-
-    for row in &mut list {
-        let uuid = as_str(row, "uuid").unwrap_or_default().to_string();
-        let install = installs.get(&uuid).cloned().unwrap_or(Value::Null);
-        if let Some(obj) = row.as_object_mut() {
-            obj.insert("install".to_string(), install);
-        }
-    }
 
     Ok(json!({
         "list": list,
@@ -674,181 +345,13 @@ pub fn get_plugin(req: GetPluginReq) -> AppResult<Value> {
         (None, None) => return Err(AppError::param("uuid or name is required")),
     };
 
-    let plugin = require_row(
+    require_row(
         &format!(
             "SELECT * FROM plugins WHERE {field} = {} AND deleted_at IS NULL LIMIT 1",
             quote(value)
         ),
         &format!("插件不存在: {value}"),
-    )?;
-
-    let uuid = as_str(&plugin, "uuid").unwrap_or_default().to_string();
-
-    let versions = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT * FROM plugin_versions WHERE plugin_uuid = {} ORDER BY is_latest DESC, id DESC",
-            quote(&uuid)
-        ),
-    )?;
-
-    let installs = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT * FROM plugin_installs WHERE plugin_uuid = {} ORDER BY id DESC",
-            quote(&uuid)
-        ),
-    )?;
-
-    Ok(json!({
-        "plugin": plugin,
-        "versions": versions,
-        "installs": installs,
-    }))
-}
-
-pub fn get_categories(req: GetCategoriesReq) -> AppResult<Value> {
-    let mut conditions = vec!["deleted_at IS NULL".to_string()];
-
-    if let Some(parent) = req.parent_uuid.as_deref() {
-        if parent.is_empty() {
-            conditions.push("(parent_uuid IS NULL OR parent_uuid = '')".to_string());
-        } else {
-            conditions.push(format!("parent_uuid = {}", quote(parent)));
-        }
-    }
-
-    let list = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT * FROM plugin_categories WHERE {} ORDER BY sort_order ASC, id ASC",
-            conditions.join(" AND ")
-        ),
-    )?;
-
-    Ok(json!({ "list": list }))
-}
-
-pub fn get_versions(req: GetVersionsReq) -> AppResult<Value> {
-    require_text(&req.plugin_uuid, "plugin_uuid")?;
-
-    let list = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT * FROM plugin_versions WHERE plugin_uuid = {} ORDER BY is_latest DESC, id DESC",
-            quote(&req.plugin_uuid)
-        ),
-    )?;
-
-    Ok(json!({ "list": list }))
-}
-
-pub fn get_configs(req: GetConfigsReq) -> AppResult<Value> {
-    require_text(&req.plugin_uuid, "plugin_uuid")?;
-    let version_id = resolve_version_id(&req.plugin_uuid, req.version_id, req.version.as_deref())?;
-
-    let sql = if version_id > 0 {
-        format!(
-            "SELECT * FROM plugin_configs WHERE plugin_uuid = {} AND version_id IN (0, {version_id}) \
-             ORDER BY sort_order ASC, id ASC",
-            quote(&req.plugin_uuid)
-        )
-    } else {
-        format!(
-            "SELECT * FROM plugin_configs WHERE plugin_uuid = {} AND version_id = 0 \
-             ORDER BY sort_order ASC, id ASC",
-            quote(&req.plugin_uuid)
-        )
-    };
-
-    let rows = db::query(PLUGIN_DB, &sql)?;
-
-    // 同一 param_key 同时存在通用配置和版本配置时，版本配置优先。
-    let mut chosen: Vec<Value> = Vec::new();
-    let mut positions: HashMap<String, usize> = HashMap::new();
-
-    for row in rows {
-        let key = as_str(&row, "param_key").unwrap_or_default().to_string();
-        let row_version = as_i64(&row, "version_id");
-
-        match positions.get(&key).copied() {
-            Some(index) => {
-                if version_id > 0 && row_version == version_id {
-                    chosen[index] = row;
-                }
-            }
-            None => {
-                positions.insert(key, chosen.len());
-                chosen.push(row);
-            }
-        }
-    }
-
-    let user_values = config::get_user_configs(&req.plugin_uuid)?;
-
-    for row in &mut chosen {
-        expand_json_fields(row, &["options"]);
-        let key = as_str(row, "param_key").unwrap_or_default().to_string();
-        let default_value = row.get("default_value").cloned().unwrap_or(Value::Null);
-
-        let (value, source) = match user_values.get(&key) {
-            Some(user) => (Value::String(user.clone()), "user"),
-            None => (default_value, "default"),
-        };
-
-        if let Some(obj) = row.as_object_mut() {
-            obj.insert("value".to_string(), value);
-            obj.insert("source".to_string(), Value::String(source.to_string()));
-        }
-    }
-
-    Ok(json!({ "configs": chosen }))
-}
-
-pub fn get_install(req: GetInstallReq) -> AppResult<Value> {
-    require_text(&req.plugin_uuid, "plugin_uuid")?;
-
-    let filter = match req.version.as_deref().filter(|v| !v.is_empty()) {
-        Some(version) => format!(" AND version = {}", quote(version)),
-        None => String::new(),
-    };
-
-    let install = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT * FROM plugin_installs WHERE plugin_uuid = {}{filter} ORDER BY id DESC LIMIT 1",
-            quote(&req.plugin_uuid)
-        ),
-    )?
-    .into_iter()
-    .next()
-    .unwrap_or(Value::Null);
-
-    Ok(json!({ "install": install }))
-}
-
-pub fn get_libs(req: GetLibsReq) -> AppResult<Value> {
-    let mut conditions = Vec::new();
-
-    if let Some(plugin_uuid) = req.plugin_uuid.as_deref().filter(|v| !v.is_empty()) {
-        conditions.push(format!("plugin_uuid = {}", quote(plugin_uuid)));
-    }
-    if let Some(local) = flag(&req.local) {
-        conditions.push(format!("is_local = {local}"));
-    }
-
-    let where_sql = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", conditions.join(" AND "))
-    };
-
-    let list = db::query(
-        PLUGIN_DB,
-        &format!("SELECT * FROM plugin_libs{where_sql} ORDER BY name ASC, id ASC"),
-    )?;
-
-    Ok(json!({ "list": list }))
+    )
 }
 
 pub fn get_functions(req: GetFunctionsReq) -> AppResult<Value> {
@@ -859,42 +362,8 @@ pub fn get_functions(req: GetFunctionsReq) -> AppResult<Value> {
         let in_list = uuids.iter().map(|u| quote(u)).collect::<Vec<_>>().join(", ");
         conditions.push(format!("uuid IN ({in_list})"));
     }
-    if let Some(lib_uuid) = req.lib_uuid.as_deref().filter(|v| !v.is_empty()) {
-        conditions.push(format!("lib_uuid = {}", quote(lib_uuid)));
-    }
-    if let Some(lib_name) = req.lib_name.as_deref().filter(|v| !v.is_empty()) {
-        conditions.push(format!("lib_name = {}", quote(lib_name)));
-    }
     if let Some(plugin_uuid) = req.plugin_uuid.as_deref().filter(|v| !v.is_empty()) {
-        conditions.push(format!(
-            "(lib_uuid IN (SELECT uuid FROM plugin_libs WHERE plugin_uuid = {})              OR lib_uuid = {})",
-            quote(plugin_uuid),
-            quote(plugin_uuid)
-        ));
-    }
-    if let Some(local) = flag(&req.local) {
-        conditions.push(format!("is_local = {local}"));
-    }
-    if let Some(use_ai) = flag(&req.use_ai) {
-        if !matches!(use_ai, 0 | 1) {
-            return Err(AppError::param("use_ai must be 0 or 1"));
-        }
-        conditions.push(format!("use_ai = {use_ai}"));
-    }
-    if let Some(statuses) = int_list(&req.embed_status).filter(|v| !v.is_empty()) {
-        if statuses.len() == 1 {
-            conditions.push(format!("embed_status = {}", statuses[0]));
-        } else {
-            let list = statuses
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            conditions.push(format!("embed_status IN ({list})"));
-        }
-    }
-    if let Some(category) = req.category.as_deref().filter(|v| !v.is_empty()) {
-        conditions.push(format!("category = {}", quote(category)));
+        conditions.push(format!("plugin_uuid = {}", quote(plugin_uuid)));
     }
 
     let where_sql = if conditions.is_empty() {
@@ -912,7 +381,7 @@ pub fn get_functions(req: GetFunctionsReq) -> AppResult<Value> {
     let mut list = db::query(
         PLUGIN_DB,
         &format!(
-            "SELECT * FROM plugin_functions{where_sql} ORDER BY id ASC \
+            "SELECT * FROM plugin_functions{where_sql} ORDER BY uuid ASC \
              LIMIT {page_size} OFFSET {offset}"
         ),
     )?;
@@ -925,7 +394,6 @@ pub fn get_functions(req: GetFunctionsReq) -> AppResult<Value> {
                 "params_example",
                 "return_schema",
                 "return_example",
-                "error_codes",
             ],
         );
     }
@@ -953,7 +421,7 @@ pub fn post_plugin(req: PostPluginReq) -> AppResult<Value> {
 
     if !db::query(
         PLUGIN_DB,
-        &format!("SELECT id FROM plugins WHERE uuid = {} LIMIT 1", quote(&uuid)),
+        &format!("SELECT uuid FROM plugins WHERE uuid = {} LIMIT 1", quote(&uuid)),
     )?
     .is_empty()
     {
@@ -963,16 +431,15 @@ pub fn post_plugin(req: PostPluginReq) -> AppResult<Value> {
     let timestamp = now();
     let sql = format!(
         "INSERT INTO plugins \
-         (uuid, ouid, flow_uid, type_uid, category_id, name, \"desc\", create_by, cover, \
+         (uuid, ouid, plugins_type, version, name, \"desc\", create_by, cover, \
           status, public, updated_by, created_at, updated_at, installed, install_path, \
-          enabled, plugin_type, target) \
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {timestamp}, {timestamp}, \
-                 0, NULL, {}, {}, {})",
+          enabled, target, platform, mask) \
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {timestamp}, {timestamp}, \
+                 0, NULL, {}, {}, {}, {})",
         quote(&uuid),
         quote_opt(req.ouid.as_deref()),
-        quote_opt(req.flow_uid.as_deref()),
-        quote_opt(req.type_uid.as_deref()),
-        quote_opt(req.category_id.as_deref()),
+        quote_opt(req.plugins_type.as_deref()),
+        quote(req.version.as_deref().unwrap_or("")),
         quote(&req.name),
         quote_opt(req.description.as_deref()),
         quote_opt(req.create_by.as_deref()),
@@ -981,178 +448,13 @@ pub fn post_plugin(req: PostPluginReq) -> AppResult<Value> {
         req.public_flag.unwrap_or(0),
         quote_opt(req.updated_by.as_deref()),
         req.enabled.unwrap_or(1),
-        quote(req.plugin_type.as_deref().unwrap_or("dll")),
         quote(req.target.as_deref().unwrap_or("common")),
+        quote(req.platform.as_deref().unwrap_or("win")),
+        req.mask.unwrap_or(0),
     );
 
     db::execute(PLUGIN_DB, &sql)?;
     Ok(json!({ "uuid": uuid }))
-}
-
-pub fn post_category(req: PostCategoryReq) -> AppResult<Value> {
-    require_text(&req.type_name, "type_name")?;
-
-    if !db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT id FROM plugin_categories WHERE type_name = {} LIMIT 1",
-            quote(&req.type_name)
-        ),
-    )?
-    .is_empty()
-    {
-        return Err(AppError::conflict(format!(
-            "分类名称已存在: {}",
-            req.type_name
-        )));
-    }
-
-    let uuid = req
-        .uuid
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(new_uuid);
-    let timestamp = now();
-
-    let sql = format!(
-        "INSERT INTO plugin_categories \
-         (uuid, type_name, icon, parent_uuid, sort_order, created_by, created_at, updated_at) \
-         VALUES ({}, {}, {}, {}, {}, {}, {timestamp}, {timestamp})",
-        quote(&uuid),
-        quote(&req.type_name),
-        quote_opt(req.icon.as_deref()),
-        quote_opt(req.parent_uuid.as_deref()),
-        req.sort_order.unwrap_or(0),
-        quote_opt(req.created_by.as_deref()),
-    );
-
-    db::execute(PLUGIN_DB, &sql)?;
-    Ok(json!({ "uuid": uuid }))
-}
-
-pub fn post_version(req: PostVersionReq) -> AppResult<Value> {
-    require_text(&req.plugin_uuid, "plugin_uuid")?;
-    require_text(&req.version, "version")?;
-    require_plugin(&req.plugin_uuid)?;
-
-    let duplicated = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT id FROM plugin_versions WHERE plugin_uuid = {} AND version = {} LIMIT 1",
-            quote(&req.plugin_uuid),
-            quote(&req.version)
-        ),
-    )?;
-    if !duplicated.is_empty() {
-        return Err(AppError::conflict(format!(
-            "版本已存在: {} {}",
-            req.plugin_uuid, req.version
-        )));
-    }
-
-    let is_latest = flag(&req.is_latest).unwrap_or(0);
-    if is_latest == 1 {
-        db::update(
-            PLUGIN_DB,
-            &format!(
-                "UPDATE plugin_versions SET is_latest = 0, updated_at = {} WHERE plugin_uuid = {}",
-                now(),
-                quote(&req.plugin_uuid)
-            ),
-        )?;
-    }
-
-    let timestamp = now();
-    let sql = format!(
-        "INSERT INTO plugin_versions \
-         (plugin_uuid, version, changelog, file_path, file_size, file_hash, file_type, \
-          min_engine_ver, max_engine_ver, status, is_latest, created_by, created_at, updated_at) \
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {is_latest}, {}, {timestamp}, {timestamp})",
-        quote(&req.plugin_uuid),
-        quote(&req.version),
-        quote_opt(req.changelog.as_deref()),
-        quote_opt(req.file_path.as_deref()),
-        int_opt(req.file_size),
-        quote_opt(req.file_hash.as_deref()),
-        quote(req.file_type.as_deref().unwrap_or("zip")),
-        quote_opt(req.min_engine_ver.as_deref()),
-        quote_opt(req.max_engine_ver.as_deref()),
-        quote(req.status.as_deref().unwrap_or("active")),
-        quote_opt(req.created_by.as_deref()),
-    );
-
-    db::execute(PLUGIN_DB, &sql)?;
-
-    let id = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT id FROM plugin_versions WHERE plugin_uuid = {} AND version = {} LIMIT 1",
-            quote(&req.plugin_uuid),
-            quote(&req.version)
-        ),
-    )?
-    .first()
-    .map(|row| as_i64(row, "id"))
-    .unwrap_or(0);
-
-    Ok(json!({ "id": id }))
-}
-
-pub fn post_config(req: PostConfigReq) -> AppResult<Value> {
-    require_text(&req.plugin_uuid, "plugin_uuid")?;
-    require_text(&req.param_key, "param_key")?;
-    require_plugin(&req.plugin_uuid)?;
-
-    let version_id = resolve_version_id(&req.plugin_uuid, req.version_id, req.version.as_deref())?;
-
-    let duplicated = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT id FROM plugin_configs WHERE plugin_uuid = {} AND version_id = {version_id} \
-             AND param_key = {} LIMIT 1",
-            quote(&req.plugin_uuid),
-            quote(&req.param_key)
-        ),
-    )?;
-    if !duplicated.is_empty() {
-        return Err(AppError::conflict(format!(
-            "配置项已存在: {}",
-            req.param_key
-        )));
-    }
-
-    let timestamp = now();
-    let required = flag(&req.required).unwrap_or(0);
-
-    let sql = format!(
-        "INSERT INTO plugin_configs \
-         (plugin_uuid, version_id, param_key, param_type, default_value, required, \
-          description, options, sort_order, created_at, updated_at) \
-         VALUES ({}, {version_id}, {}, {}, {}, {required}, {}, {}, {}, {timestamp}, {timestamp})",
-        quote(&req.plugin_uuid),
-        quote(&req.param_key),
-        quote(req.param_type.as_deref().unwrap_or("string")),
-        quote_opt(req.default_value.as_deref()),
-        quote_opt(req.description.as_deref()),
-        quote_opt(req.options.as_deref()),
-        req.sort_order.unwrap_or(0),
-    );
-
-    db::execute(PLUGIN_DB, &sql)?;
-
-    let id = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT id FROM plugin_configs WHERE plugin_uuid = {} AND version_id = {version_id} \
-             AND param_key = {} LIMIT 1",
-            quote(&req.plugin_uuid),
-            quote(&req.param_key)
-        ),
-    )?
-    .first()
-    .map(|row| as_i64(row, "id"))
-    .unwrap_or(0);
-
-    Ok(json!({ "id": id }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,13 +468,12 @@ pub fn update_plugin(req: UpdatePluginReq) -> AppResult<Value> {
     require_plugin(&req.uuid)?;
 
     let sql = format!(
-        "UPDATE plugins SET ouid = {}, flow_uid = {}, type_uid = {}, category_id = {}, \
-         name = {}, \"desc\" = {}, create_by = {}, cover = {}, status = {}, public = {}, \
-         updated_by = {}, plugin_type = {}, target = {}, updated_at = {} WHERE uuid = {}",
+        "UPDATE plugins SET ouid = {}, plugins_type = {}, version = {}, name = {}, \"desc\" = {}, \
+         create_by = {}, cover = {}, status = {}, public = {}, updated_by = {}, \
+         target = {}, platform = {}, mask = {}, updated_at = {} WHERE uuid = {}",
         quote_opt(req.ouid.as_deref()),
-        quote_opt(req.flow_uid.as_deref()),
-        quote_opt(req.type_uid.as_deref()),
-        quote_opt(req.category_id.as_deref()),
+        quote_opt(req.plugins_type.as_deref()),
+        quote(req.version.as_deref().unwrap_or("")),
         quote(&req.name),
         quote_opt(req.description.as_deref()),
         quote_opt(req.create_by.as_deref()),
@@ -1180,113 +481,11 @@ pub fn update_plugin(req: UpdatePluginReq) -> AppResult<Value> {
         quote(req.status.as_deref().unwrap_or("draft")),
         req.public_flag.unwrap_or(0),
         quote_opt(req.updated_by.as_deref()),
-        quote(req.plugin_type.as_deref().unwrap_or("dll")),
         quote(req.target.as_deref().unwrap_or("common")),
+        quote(req.platform.as_deref().unwrap_or("win")),
+        req.mask.unwrap_or(0),
         now(),
         quote(&req.uuid),
-    );
-
-    db::update(PLUGIN_DB, &sql)?;
-    Ok(json!({ "updated": true }))
-}
-
-pub fn update_category(req: UpdateCategoryReq) -> AppResult<Value> {
-    require_text(&req.uuid, "uuid")?;
-    require_text(&req.type_name, "type_name")?;
-    require_row(
-        &format!(
-            "SELECT id FROM plugin_categories WHERE uuid = {} LIMIT 1",
-            quote(&req.uuid)
-        ),
-        &format!("分类不存在: {}", req.uuid),
-    )?;
-
-    let sql = format!(
-        "UPDATE plugin_categories SET type_name = {}, icon = {}, parent_uuid = {}, \
-         sort_order = {}, updated_by = {}, updated_at = {} WHERE uuid = {}",
-        quote(&req.type_name),
-        quote_opt(req.icon.as_deref()),
-        quote_opt(req.parent_uuid.as_deref()),
-        req.sort_order.unwrap_or(0),
-        quote_opt(req.updated_by.as_deref()),
-        now(),
-        quote(&req.uuid),
-    );
-
-    db::update(PLUGIN_DB, &sql)?;
-    Ok(json!({ "updated": true }))
-}
-
-pub fn update_version(req: UpdateVersionReq) -> AppResult<Value> {
-    if req.id <= 0 {
-        return Err(AppError::param("id is required"));
-    }
-    require_text(&req.version, "version")?;
-
-    let existing = require_row(
-        &format!("SELECT * FROM plugin_versions WHERE id = {} LIMIT 1", req.id),
-        &format!("版本不存在: {}", req.id),
-    )?;
-
-    let is_latest = flag(&req.is_latest).unwrap_or(0);
-    let plugin_uuid = as_str(&existing, "plugin_uuid").unwrap_or_default().to_string();
-
-    if is_latest == 1 && !plugin_uuid.is_empty() {
-        db::update(
-            PLUGIN_DB,
-            &format!(
-                "UPDATE plugin_versions SET is_latest = 0, updated_at = {} WHERE plugin_uuid = {}",
-                now(),
-                quote(&plugin_uuid)
-            ),
-        )?;
-    }
-
-    let sql = format!(
-        "UPDATE plugin_versions SET version = {}, changelog = {}, file_path = {}, \
-         file_size = {}, file_hash = {}, file_type = {}, min_engine_ver = {}, \
-         max_engine_ver = {}, status = {}, is_latest = {is_latest}, updated_at = {} WHERE id = {}",
-        quote(&req.version),
-        quote_opt(req.changelog.as_deref()),
-        quote_opt(req.file_path.as_deref()),
-        int_opt(req.file_size),
-        quote_opt(req.file_hash.as_deref()),
-        quote(req.file_type.as_deref().unwrap_or("zip")),
-        quote_opt(req.min_engine_ver.as_deref()),
-        quote_opt(req.max_engine_ver.as_deref()),
-        quote(req.status.as_deref().unwrap_or("active")),
-        now(),
-        req.id,
-    );
-
-    db::update(PLUGIN_DB, &sql)?;
-    Ok(json!({ "updated": true }))
-}
-
-pub fn update_config(req: UpdateConfigReq) -> AppResult<Value> {
-    if req.id <= 0 {
-        return Err(AppError::param("id is required"));
-    }
-    require_text(&req.param_key, "param_key")?;
-    require_row(
-        &format!("SELECT id FROM plugin_configs WHERE id = {} LIMIT 1", req.id),
-        &format!("配置项不存在: {}", req.id),
-    )?;
-
-    let required = flag(&req.required).unwrap_or(0);
-
-    let sql = format!(
-        "UPDATE plugin_configs SET param_key = {}, param_type = {}, default_value = {}, \
-         required = {required}, description = {}, options = {}, sort_order = {}, \
-         updated_at = {} WHERE id = {}",
-        quote(&req.param_key),
-        quote(req.param_type.as_deref().unwrap_or("string")),
-        quote_opt(req.default_value.as_deref()),
-        quote_opt(req.description.as_deref()),
-        quote_opt(req.options.as_deref()),
-        req.sort_order.unwrap_or(0),
-        now(),
-        req.id,
     );
 
     db::update(PLUGIN_DB, &sql)?;
@@ -1310,11 +509,11 @@ pub fn patch_plugin(req: PatchPluginReq) -> AppResult<Value> {
     if let Some(status) = req.status.as_deref().filter(|v| !v.is_empty()) {
         sets.push(format!("status = {}", quote(status)));
     }
-    if let Some(category_id) = req.category_id.as_deref() {
-        sets.push(format!("category_id = {}", quote(category_id)));
-    }
     if let Some(cover) = req.cover.as_deref() {
         sets.push(format!("cover = {}", quote(cover)));
+    }
+    if let Some(mask) = req.mask {
+        sets.push(format!("mask = {mask}"));
     }
 
     if sets.is_empty() {
@@ -1335,164 +534,190 @@ pub fn patch_plugin(req: PatchPluginReq) -> AppResult<Value> {
     Ok(json!({ "updated": true }))
 }
 
-pub fn patch_install(req: PatchInstallReq) -> AppResult<Value> {
-    require_text(&req.plugin_uuid, "plugin_uuid")?;
-    validate_optional(req.status.as_deref(), INSTALL_STATUSES, "status")?;
-
-    let filter = match req.version.as_deref().filter(|v| !v.is_empty()) {
-        Some(version) => format!(" AND version = {}", quote(version)),
-        None => String::new(),
+pub fn delete_plugin(req: DeletePluginReq) -> AppResult<Value> {
+    let (field, value) = match (
+        req.plugin_uuid.as_deref().filter(|v| !v.is_empty()),
+        req.name.as_deref().filter(|v| !v.is_empty()),
+    ) {
+        (Some(uuid), _) => ("uuid", uuid),
+        (None, Some(name)) => ("name", name),
+        (None, None) => return Err(AppError::param("plugin_uuid or name is required")),
     };
 
-    let existing = db::query(
-        PLUGIN_DB,
+    let plugin = require_row(
         &format!(
-            "SELECT * FROM plugin_installs WHERE plugin_uuid = {}{filter} ORDER BY id DESC LIMIT 1",
-            quote(&req.plugin_uuid)
+            "SELECT uuid, name FROM plugins WHERE {field} = {} LIMIT 1",
+            quote(value)
         ),
-    )?
-    .into_iter()
-    .next()
-    .ok_or_else(|| AppError::not_found(format!("安装记录不存在: {}", req.plugin_uuid)))?;
+        &format!("插件不存在: {value}"),
+    )?;
+    let uuid = as_str(&plugin, "uuid").unwrap_or_default().to_string();
+    let name = as_str(&plugin, "name").unwrap_or_default().to_string();
 
-    let current_path = as_str(&existing, "install_path").unwrap_or_default().to_string();
-    let status = req.status.as_deref().filter(|v| !v.is_empty());
-    let mut sets = Vec::new();
-
-    if let Some(status) = status {
-        sets.push(format!("status = {}", quote(status)));
-        if status == "running" {
-            sets.push(format!("started_at = {}", now()));
-        }
-        if status != "broken" {
-            sets.push("last_error = NULL".to_string());
-        }
-    }
-    if let Some(path) = req.install_path.as_deref() {
-        sets.push(format!("install_path = {}", quote(path)));
-    }
-    if let Some(enabled) = flag(&req.enabled) {
-        sets.push(format!("enabled = {enabled}"));
-    }
-
-    if sets.is_empty() {
-        return Err(AppError::param("no fields to update"));
-    }
-
-    sets.push(format!("updated_at = {}", now()));
-
-    let install_id = as_i64(&existing, "id");
-    db::update(
+    db::delete(
+        PLUGIN_DB,
+        &format!("DELETE FROM plugins WHERE uuid = {}", quote(&uuid)),
+    )?;
+    db::delete(
         PLUGIN_DB,
         &format!(
-            "UPDATE plugin_installs SET {} WHERE id = {install_id}",
-            sets.join(", ")
+            "DELETE FROM plugin_functions WHERE plugin_uuid = {}",
+            quote(&uuid)
         ),
     )?;
 
-    // 兼容字段：plugins.installed / install_path 以 plugin_installs 为准同步。
-    if let Some(status) = status {
-        let effective_path = req
-            .install_path
-            .clone()
-            .unwrap_or_else(|| current_path.clone());
-
-        if matches!(status, "installed" | "running") {
-            db::update(
-                PLUGIN_DB,
-                &format!(
-                    "UPDATE plugins SET installed = 1, install_path = {}, updated_at = {} WHERE uuid = {}",
-                    quote(&effective_path),
-                    now(),
-                    quote(&req.plugin_uuid)
-                ),
-            )?;
-        } else {
-            db::update(
-                PLUGIN_DB,
-                &format!(
-                    "UPDATE plugins SET installed = 0, updated_at = {} WHERE uuid = {}",
-                    now(),
-                    quote(&req.plugin_uuid)
-                ),
-            )?;
-        }
-    }
-
-    Ok(json!({ "updated": true }))
+    Ok(json!({ "plugin_uuid": uuid, "name": name, "deleted": true }))
 }
 
-pub fn patch_config(req: PatchConfigReq) -> AppResult<Value> {
-    require_text(&req.plugin_uuid, "plugin_uuid")?;
-    require_text(&req.key, "key")?;
+fn get_function(uuid: &str) -> AppResult<Value> {
+    let mut row = require_row(
+        &format!(
+            "SELECT * FROM plugin_functions WHERE uuid = {} LIMIT 1",
+            quote(uuid)
+        ),
+        &format!("能力不存在: {uuid}"),
+    )?;
+    expand_json_fields(
+        &mut row,
+        &[
+            "params_schema",
+            "params_example",
+            "return_schema",
+            "return_example",
+        ],
+    );
+    Ok(row)
+}
 
-    let definitions = db::query(
+fn function_json(value: &Option<Value>, default: &str) -> String {
+    value
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| default.to_string())
+}
+
+pub fn post_function(req: PostFunctionReq) -> AppResult<Value> {
+    require_text(&req.uuid, "uuid")?;
+    require_text(&req.plugin_uuid, "plugin_uuid")?;
+    require_text(&req.ffi_symbol, "ffi_symbol")?;
+    require_text(&req.title, "title")?;
+    require_text(&req.description, "description")?;
+
+    if !db::query(
         PLUGIN_DB,
         &format!(
-            "SELECT * FROM plugin_configs WHERE plugin_uuid = {} AND param_key = {} \
-             ORDER BY version_id DESC, id DESC",
-            quote(&req.plugin_uuid),
-            quote(&req.key)
+            "SELECT uuid FROM plugin_functions WHERE uuid = {} LIMIT 1",
+            quote(&req.uuid)
         ),
-    )?;
-
-    if definitions.is_empty() {
-        return Err(AppError::not_found(format!(
-            "配置项不存在: {}",
-            req.key
+    )?
+    .is_empty()
+    {
+        return Err(AppError::conflict(format!(
+            "能力 uuid 已存在: {}",
+            req.uuid
         )));
     }
 
-    let version_id = resolve_version_id(&req.plugin_uuid, req.version_id, req.version.as_deref())?;
-    let definition = definitions
-        .iter()
-        .find(|row| as_i64(row, "version_id") == version_id)
-        .unwrap_or(&definitions[0]);
+    let timestamp = now();
+    let params_schema = function_json(&req.params_schema, "{}");
+    let return_schema = function_json(&req.return_schema, "{}");
+    let params_example = req.params_example.as_ref().map(ToString::to_string);
+    let return_example = req.return_example.as_ref().map(ToString::to_string);
+    let use_ai = flag(&req.use_ai).unwrap_or(0);
 
-    let value_type = as_str(definition, "param_type").unwrap_or("string");
-    let title = as_str(definition, "description")
-        .filter(|v| !v.is_empty())
-        .unwrap_or(&req.key);
-    let value = value_text(&req.value);
+    let sql = format!(
+        "INSERT INTO plugin_functions \
+         (uuid, plugin_uuid, ffi_symbol, title, description, params_schema, params_example, \
+          return_schema, return_example, use_ai, created_at, updated_at) \
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {use_ai}, {timestamp}, {timestamp})",
+        quote(&req.uuid),
+        quote(&req.plugin_uuid),
+        quote(&req.ffi_symbol),
+        quote(&req.title),
+        quote(&req.description),
+        quote(&params_schema),
+        quote_opt(params_example.as_deref()),
+        quote(&return_schema),
+        quote_opt(return_example.as_deref()),
+    );
+    db::execute(PLUGIN_DB, &sql)?;
+    get_function(&req.uuid)
+}
 
-    config::set_user_config(&req.plugin_uuid, &req.key, &value, value_type, title)?;
-    Ok(json!({ "saved": true }))
+pub fn update_function(req: UpdateFunctionReq) -> AppResult<Value> {
+    require_text(&req.uuid, "uuid")?;
+    require_text(&req.plugin_uuid, "plugin_uuid")?;
+    require_text(&req.ffi_symbol, "ffi_symbol")?;
+    require_text(&req.title, "title")?;
+    require_text(&req.description, "description")?;
+    get_function(&req.uuid)?;
+
+    let params_schema = function_json(&req.params_schema, "{}");
+    let return_schema = function_json(&req.return_schema, "{}");
+    let params_example = req.params_example.as_ref().map(ToString::to_string);
+    let return_example = req.return_example.as_ref().map(ToString::to_string);
+    let use_ai = flag(&req.use_ai).unwrap_or(0);
+
+    db::update(
+        PLUGIN_DB,
+        &format!(
+            "UPDATE plugin_functions SET plugin_uuid = {}, ffi_symbol = {}, title = {}, \
+             description = {}, params_schema = {}, params_example = {}, return_schema = {}, \
+             return_example = {}, use_ai = {use_ai}, updated_at = {} WHERE uuid = {}",
+            quote(&req.plugin_uuid),
+            quote(&req.ffi_symbol),
+            quote(&req.title),
+            quote(&req.description),
+            quote(&params_schema),
+            quote_opt(params_example.as_deref()),
+            quote(&return_schema),
+            quote_opt(return_example.as_deref()),
+            now(),
+            quote(&req.uuid),
+        ),
+    )?;
+    get_function(&req.uuid)
 }
 
 pub fn patch_function(req: PatchFunctionReq) -> AppResult<Value> {
     require_text(&req.uuid, "uuid")?;
-    require_row(
-        &format!(
-            "SELECT id FROM plugin_functions WHERE uuid = {} LIMIT 1",
-            quote(&req.uuid)
-        ),
-        &format!("能力不存在: {}", req.uuid),
-    )?;
+    get_function(&req.uuid)?;
 
     let mut sets = Vec::new();
 
+    if let Some(value) = req.plugin_uuid.as_deref() {
+        require_text(value, "plugin_uuid")?;
+        sets.push(format!("plugin_uuid = {}", quote(value)));
+    }
+    if let Some(value) = req.ffi_symbol.as_deref() {
+        require_text(value, "ffi_symbol")?;
+        sets.push(format!("ffi_symbol = {}", quote(value)));
+    }
+    if let Some(value) = req.title.as_deref() {
+        require_text(value, "title")?;
+        sets.push(format!("title = {}", quote(value)));
+    }
+    if let Some(value) = req.description.as_deref() {
+        require_text(value, "description")?;
+        sets.push(format!("description = {}", quote(value)));
+    }
+    if let Some(value) = req.params_schema.as_ref() {
+        sets.push(format!("params_schema = {}", quote(&value.to_string())));
+    }
+    if let Some(value) = req.params_example.as_ref() {
+        sets.push(format!("params_example = {}", quote(&value.to_string())));
+    }
+    if let Some(value) = req.return_schema.as_ref() {
+        sets.push(format!("return_schema = {}", quote(&value.to_string())));
+    }
+    if let Some(value) = req.return_example.as_ref() {
+        sets.push(format!("return_example = {}", quote(&value.to_string())));
+    }
     if let Some(use_ai) = flag(&req.use_ai) {
         if !matches!(use_ai, 0 | 1) {
             return Err(AppError::param("use_ai must be 0 or 1"));
         }
         sets.push(format!("use_ai = {use_ai}"));
-    }
-    if let Some(status) = flag(&req.embed_status) {
-        if !EMBED_STATUSES.contains(&status) {
-            return Err(AppError::param(
-                "embed_status must be one of: 0, 1, 2, 3",
-            ));
-        }
-        sets.push(format!("embed_status = {status}"));
-    }
-    if let Some(model) = req.embed_model.as_deref() {
-        sets.push(format!("embed_model = {}", quote(model)));
-    }
-    if let Some(hash) = req.embed_text_hash.as_deref() {
-        sets.push(format!("embed_text_hash = {}", quote(hash)));
-    }
-    if let Some(embedded_at) = req.embedded_at {
-        sets.push(format!("embedded_at = {embedded_at}"));
     }
 
     if sets.is_empty() {
@@ -1510,35 +735,41 @@ pub fn patch_function(req: PatchFunctionReq) -> AppResult<Value> {
         ),
     )?;
 
-    Ok(json!({ "updated": true }))
+    get_function(&req.uuid)
 }
 
-// ---------------------------------------------------------------------------
-// 技能（skills / skill_categories）
-// ---------------------------------------------------------------------------
-
-fn require_skill_category(code: &str) -> AppResult<()> {
-    require_text(code, "category")?;
-    if db::query(
+pub fn delete_function(req: DeleteFunctionReq) -> AppResult<Value> {
+    require_text(&req.uuid, "uuid")?;
+    get_function(&req.uuid)?;
+    db::delete(
         PLUGIN_DB,
         &format!(
-            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
-            quote(code)
+            "DELETE FROM plugin_functions WHERE uuid = {}",
+            quote(&req.uuid)
         ),
-    )?
-    .is_empty()
-    {
-        return Err(AppError::param(format!("技能分类不存在: {code}")));
-    }
-    Ok(())
+    )?;
+    Ok(json!({ "uuid": req.uuid, "deleted": true }))
 }
 
-pub fn get_skill_categories(_req: GetSkillCategoriesReq) -> AppResult<Value> {
-    let list = db::query(
-        PLUGIN_DB,
-        "SELECT * FROM skill_categories ORDER BY sort ASC, code ASC",
-    )?;
-    Ok(json!({ "list": list }))
+// ---------------------------------------------------------------------------
+// 技能（designdb 的 skills 对象集）
+// ---------------------------------------------------------------------------
+
+fn skill_summary(doc: &Value) -> Value {
+    json!({
+        "id": doc.get("id").or_else(|| doc.get("_id")).cloned().unwrap_or(Value::Null),
+        "plugin_uuid": doc.get("plugin_uuid").cloned().unwrap_or(Value::Null),
+        "name": doc.get("name").cloned().unwrap_or(Value::Null),
+        "description": doc.get("description").cloned().unwrap_or(Value::Null),
+        "category": doc.get("category").cloned().unwrap_or(Value::Null),
+        "trigger": doc.get("trigger").cloned().unwrap_or(Value::Null),
+        "is_system": doc.get("is_system").cloned().unwrap_or(json!(0)),
+        "is_enabled": doc.get("is_enabled").cloned().unwrap_or(json!(1)),
+        "sort": doc.get("sort").cloned().unwrap_or(json!(0)),
+        "version": doc.get("version").cloned().unwrap_or(json!(1)),
+        "created_at": doc.get("created_at").cloned().unwrap_or(Value::Null),
+        "updated_at": doc.get("updated_at").cloned().unwrap_or(Value::Null),
+    })
 }
 
 pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
@@ -1546,20 +777,10 @@ pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
     let mut conditions = Vec::new();
 
     if let Some(categories) = req.categories.as_ref().filter(|v| !v.is_empty()) {
-        let list = categories
-            .iter()
-            .map(|value| quote(value))
-            .collect::<Vec<_>>()
-            .join(", ");
-        conditions.push(format!("category IN ({list})"));
+        conditions.push(json!({ "category": { "$in": categories } }));
     }
     if let Some(ids) = req.ids.as_ref().filter(|v| !v.is_empty()) {
-        let list = ids
-            .iter()
-            .map(|value| quote(value))
-            .collect::<Vec<_>>()
-            .join(", ");
-        conditions.push(format!("id IN ({list})"));
+        conditions.push(json!({ "_id": { "$in": ids } }));
     }
     if let Some(plugin_uuid) = req
         .plugin_uuid
@@ -1567,59 +788,51 @@ pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
-        conditions.push(format!(
-            "id IN (SELECT skill_id FROM plugin_skills WHERE plugin_uuid = {})",
-            quote(plugin_uuid)
-        ));
+        conditions.push(json!({ "plugin_uuid": plugin_uuid }));
     }
     if let Some(enabled) = flag(&req.enabled) {
-        conditions.push(format!("is_enabled = {enabled}"));
+        conditions.push(json!({ "is_enabled": enabled }));
     }
 
-    let where_sql = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", conditions.join(" AND "))
+    let filter = match conditions.len() {
+        0 => json!({}),
+        1 => conditions.remove(0),
+        _ => json!({ "$and": conditions }),
     };
-    let total = query_i64(
-        PLUGIN_DB,
-        &format!("SELECT COUNT(*) AS total FROM skills{where_sql}"),
-        "total",
-    )?;
 
+    let mut docs = designdb::query_all(filter)?;
+    docs.sort_by(|a, b| {
+        let key = |doc: &Value| {
+            (
+                doc.get("is_system").and_then(Value::as_i64).unwrap_or(0),
+                doc.get("category")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                doc.get("sort").and_then(Value::as_i64).unwrap_or(0),
+                doc.get("_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        };
+        let (a_system, a_category, a_sort, a_id) = key(a);
+        let (b_system, b_category, b_sort, b_id) = key(b);
+        b_system
+            .cmp(&a_system)
+            .then_with(|| a_category.cmp(&b_category))
+            .then_with(|| a_sort.cmp(&b_sort))
+            .then_with(|| a_id.cmp(&b_id))
+    });
+
+    let total = docs.len();
     let with_content = req.with_content.unwrap_or(false);
-    let columns = if with_content {
-        "*"
-    } else {
-        "id, name, description, category, trigger, is_system, is_enabled, sort, version, created_at, updated_at"
-    };
-    let mut list = db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT {columns} FROM skills{where_sql} \
-             ORDER BY is_system DESC, category ASC, sort ASC, id ASC \
-             LIMIT {page_size} OFFSET {offset}"
-        ),
-    )?;
-    if with_content {
-        for row in &mut list {
-            expand_json_fields(row, &["params_schema"]);
-            // 完整内容以 designdb 为准；缺失时回退 skills 表。
-            if let Some(id) = row
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                && let Ok(Some(doc)) = crate::utils::designdb::get_skill_doc(&id)
-                && let Some(obj) = row.as_object_mut()
-            {
-                for key in ["content", "trigger", "params_schema"] {
-                    if let Some(value) = doc.get(key) {
-                        obj.insert(key.to_string(), value.clone());
-                    }
-                }
-            }
-        }
-    }
+    let list = docs
+        .into_iter()
+        .skip(offset as usize)
+        .take(page_size as usize)
+        .map(|doc| if with_content { doc } else { skill_summary(&doc) })
+        .collect::<Vec<_>>();
 
     Ok(json!({
         "list": list,
@@ -1631,18 +844,16 @@ pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
 
 pub fn get_skill(req: GetSkillReq) -> AppResult<Value> {
     require_text(&req.id, "id")?;
-    let mut row = require_row(
-        &format!("SELECT * FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
-        &format!("技能不存在: {}", req.id),
-    )?;
-    expand_json_fields(&mut row, &["params_schema"]);
-    Ok(row)
+    designdb::get_skill_doc(req.id.trim())?
+        .ok_or_else(|| AppError::not_found(format!("技能不存在: {}", req.id)))
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PostSkillReq {
     #[serde(default)]
     pub id: String,
+    #[serde(default)]
+    pub plugin_uuid: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -1670,6 +881,8 @@ pub struct UpdateSkillReq {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
+    pub plugin_uuid: Option<String>,
+    #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
@@ -1695,40 +908,11 @@ pub struct DeleteSkillReq {
     pub id: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct PostSkillCategoryReq {
-    #[serde(default)]
-    pub code: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub sort: Option<i64>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct UpdateSkillCategoryReq {
-    #[serde(default)]
-    pub code: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub sort: Option<i64>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct DeleteSkillCategoryReq {
-    #[serde(default)]
-    pub code: String,
-}
-
 pub fn post_skill(req: PostSkillReq) -> AppResult<Value> {
     require_text(&req.id, "id")?;
+    require_text(&req.plugin_uuid, "plugin_uuid")?;
     require_text(&req.name, "name")?;
-    require_skill_category(&req.category)?;
+    require_text(&req.category, "category")?;
     validate_skill_fields(
         &req.name,
         req.description.as_deref(),
@@ -1736,47 +920,38 @@ pub fn post_skill(req: PostSkillReq) -> AppResult<Value> {
         req.params_schema.as_ref(),
     )?;
 
-    if !db::query(
-        PLUGIN_DB,
-        &format!("SELECT id FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
-    )?
-    .is_empty()
-    {
-        return Err(AppError::conflict(format!("技能 id 已存在: {}", req.id)));
+    let id = req.id.trim();
+    if designdb::get_skill_doc(id)?.is_some() {
+        return Err(AppError::conflict(format!("技能 id 已存在: {id}")));
     }
 
-    let params_schema = req
-        .params_schema
-        .clone()
-        .unwrap_or_else(|| json!({}))
-        .to_string();
-    let sql = format!(
-        "INSERT INTO skills \
-         (id, name, description, category, content, trigger, params_schema, \
-          is_system, is_enabled, sort, version) \
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-        quote(&req.id),
-        quote(&req.name),
-        quote_opt(req.description.as_deref()),
-        quote(&req.category),
-        quote_opt(req.content.as_deref()),
-        quote_opt(req.trigger.as_deref()),
-        quote(&params_schema),
-        flag(&req.is_system).unwrap_or(0),
-        flag(&req.is_enabled).unwrap_or(1),
-        req.sort.unwrap_or(0),
-        req.version.unwrap_or(1),
-    );
-    db::execute(PLUGIN_DB, &sql)?;
-    get_skill(GetSkillReq { id: req.id })
+    let timestamp = now();
+    let doc = json!({
+        "_id": id,
+        "id": id,
+        "plugin_uuid": req.plugin_uuid.trim(),
+        "name": req.name,
+        "description": req.description.unwrap_or_default(),
+        "category": req.category,
+        "content": req.content.unwrap_or_default(),
+        "trigger": req.trigger.unwrap_or_default(),
+        "params_schema": req.params_schema.unwrap_or_else(|| json!({})),
+        "is_system": flag(&req.is_system).unwrap_or(0),
+        "is_enabled": flag(&req.is_enabled).unwrap_or(1),
+        "sort": req.sort.unwrap_or(0),
+        "version": req.version.unwrap_or(1),
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    });
+    designdb::insert(doc)?;
+    get_skill(GetSkillReq { id: id.to_string() })
 }
 
 pub fn update_skill(req: UpdateSkillReq) -> AppResult<Value> {
     require_text(&req.id, "id")?;
-    require_row(
-        &format!("SELECT id FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
-        &format!("技能不存在: {}", req.id),
-    )?;
+    let id = req.id.trim();
+    let existing = designdb::get_skill_doc(id)?
+        .ok_or_else(|| AppError::not_found(format!("技能不存在: {id}")))?;
     validate_skill_fields(
         req.name.as_deref().unwrap_or(""),
         req.description.as_deref(),
@@ -1784,165 +959,63 @@ pub fn update_skill(req: UpdateSkillReq) -> AppResult<Value> {
         req.params_schema.as_ref(),
     )?;
 
-    let mut sets = Vec::new();
+    let mut set = serde_json::Map::new();
+    if let Some(plugin_uuid) = req.plugin_uuid.as_deref() {
+        require_text(plugin_uuid, "plugin_uuid")?;
+        set.insert("plugin_uuid".to_string(), json!(plugin_uuid));
+    }
     if let Some(name) = req.name.as_deref() {
         require_text(name, "name")?;
-        sets.push(format!("name = {}", quote(name)));
+        set.insert("name".to_string(), json!(name));
     }
     if let Some(description) = req.description.as_deref() {
-        sets.push(format!("description = {}", quote(description)));
+        set.insert("description".to_string(), json!(description));
     }
     if let Some(category) = req.category.as_deref() {
-        require_skill_category(category)?;
-        sets.push(format!("category = {}", quote(category)));
+        require_text(category, "category")?;
+        set.insert("category".to_string(), json!(category));
     }
     if let Some(content) = req.content.as_deref() {
-        sets.push(format!("content = {}", quote(content)));
+        set.insert("content".to_string(), json!(content));
     }
     if let Some(trigger) = req.trigger.as_deref() {
-        sets.push(format!("trigger = {}", quote(trigger)));
+        set.insert("trigger".to_string(), json!(trigger));
     }
     if let Some(params_schema) = req.params_schema.as_ref() {
-        sets.push(format!(
-            "params_schema = {}",
-            quote(&params_schema.to_string())
-        ));
+        set.insert("params_schema".to_string(), params_schema.clone());
     }
     if let Some(is_system) = flag(&req.is_system) {
-        sets.push(format!("is_system = {is_system}"));
+        set.insert("is_system".to_string(), json!(is_system));
     }
     if let Some(is_enabled) = flag(&req.is_enabled) {
-        sets.push(format!("is_enabled = {is_enabled}"));
+        set.insert("is_enabled".to_string(), json!(is_enabled));
     }
     if let Some(sort) = req.sort {
-        sets.push(format!("sort = {sort}"));
+        set.insert("sort".to_string(), json!(sort));
     }
 
-    if sets.is_empty() {
+    if set.is_empty() {
         return Err(AppError::param("no fields to update"));
     }
-    sets.push("version = version + 1".to_string());
-    sets.push("updated_at = CURRENT_TIMESTAMP".to_string());
+    let version = existing.get("version").and_then(Value::as_i64).unwrap_or(1);
+    set.insert("version".to_string(), json!(version + 1));
+    set.insert("updated_at".to_string(), json!(now()));
 
-    db::update(
-        PLUGIN_DB,
-        &format!(
-            "UPDATE skills SET {} WHERE id = {}",
-            sets.join(", "),
-            quote(&req.id)
-        ),
+    designdb::update(
+        json!({ "_id": id }),
+        json!({ "$set": Value::Object(set) }),
     )?;
-    get_skill(GetSkillReq { id: req.id })
+    get_skill(GetSkillReq { id: id.to_string() })
 }
 
 pub fn delete_skill(req: DeleteSkillReq) -> AppResult<Value> {
     require_text(&req.id, "id")?;
-    require_row(
-        &format!("SELECT id FROM skills WHERE id = {} LIMIT 1", quote(&req.id)),
-        &format!("技能不存在: {}", req.id),
-    )?;
-    db::delete(
-        PLUGIN_DB,
-        &format!("DELETE FROM skills WHERE id = {}", quote(&req.id)),
-    )?;
+    let id = req.id.trim();
+    if designdb::get_skill_doc(id)?.is_none() {
+        return Err(AppError::not_found(format!("技能不存在: {id}")));
+    }
+    designdb::delete(json!({ "_id": id }))?;
     Ok(json!({ "id": req.id, "deleted": true }))
-}
-
-pub fn post_skill_category(req: PostSkillCategoryReq) -> AppResult<Value> {
-    require_text(&req.code, "code")?;
-    require_text(&req.name, "name")?;
-    if !db::query(
-        PLUGIN_DB,
-        &format!(
-            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
-            quote(&req.code)
-        ),
-    )?
-    .is_empty()
-    {
-        return Err(AppError::conflict(format!(
-            "技能分类已存在: {}",
-            req.code
-        )));
-    }
-    let sql = format!(
-        "INSERT INTO skill_categories (code, name, description, sort) \
-         VALUES ({}, {}, {}, {})",
-        quote(&req.code),
-        quote(&req.name),
-        quote_opt(req.description.as_deref()),
-        req.sort.unwrap_or(0),
-    );
-    db::execute(PLUGIN_DB, &sql)?;
-    Ok(json!({ "code": req.code }))
-}
-
-pub fn update_skill_category(req: UpdateSkillCategoryReq) -> AppResult<Value> {
-    require_text(&req.code, "code")?;
-    require_row(
-        &format!(
-            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
-            quote(&req.code)
-        ),
-        &format!("技能分类不存在: {}", req.code),
-    )?;
-
-    let mut sets = Vec::new();
-    if let Some(name) = req.name.as_deref() {
-        require_text(name, "name")?;
-        sets.push(format!("name = {}", quote(name)));
-    }
-    if let Some(description) = req.description.as_deref() {
-        sets.push(format!("description = {}", quote(description)));
-    }
-    if let Some(sort) = req.sort {
-        sets.push(format!("sort = {sort}"));
-    }
-    if sets.is_empty() {
-        return Err(AppError::param("no fields to update"));
-    }
-    db::update(
-        PLUGIN_DB,
-        &format!(
-            "UPDATE skill_categories SET {} WHERE code = {}",
-            sets.join(", "),
-            quote(&req.code)
-        ),
-    )?;
-    Ok(json!({ "code": req.code }))
-}
-
-pub fn delete_skill_category(req: DeleteSkillCategoryReq) -> AppResult<Value> {
-    require_text(&req.code, "code")?;
-    require_row(
-        &format!(
-            "SELECT code FROM skill_categories WHERE code = {} LIMIT 1",
-            quote(&req.code)
-        ),
-        &format!("技能分类不存在: {}", req.code),
-    )?;
-    let used = query_i64(
-        PLUGIN_DB,
-        &format!(
-            "SELECT COUNT(*) AS total FROM skills WHERE category = {}",
-            quote(&req.code)
-        ),
-        "total",
-    )?;
-    if used > 0 {
-        return Err(AppError::conflict(format!(
-            "技能分类仍被 {used} 条技能引用: {}",
-            req.code
-        )));
-    }
-    db::delete(
-        PLUGIN_DB,
-        &format!(
-            "DELETE FROM skill_categories WHERE code = {}",
-            quote(&req.code)
-        ),
-    )?;
-    Ok(json!({ "code": req.code, "deleted": true }))
 }
 
 #[cfg(test)]
@@ -1973,13 +1046,6 @@ mod tests {
     }
 
     #[test]
-    fn value_text_flattens_non_strings() {
-        assert_eq!(value_text(&json!("x")), "x");
-        assert_eq!(value_text(&json!(2)), "2");
-        assert_eq!(value_text(&json!(null)), "");
-    }
-
-    #[test]
     fn skill_requests_parse_with_defaults() {
         let req: GetSkillsReq = serde_json::from_str("{}").unwrap();
         assert!(req.categories.is_none());
@@ -1991,9 +1057,12 @@ mod tests {
         assert_eq!(req.plugin_uuid.as_deref(), Some("plugin-1"));
         assert_eq!(req.with_content, Some(true));
 
-        let skill: PostSkillReq =
-            serde_json::from_str(r#"{"id":"skill-x","name":"X","category":"design"}"#).unwrap();
+        let skill: PostSkillReq = serde_json::from_str(
+            r#"{"id":"skill-x","plugin_uuid":"plugin-1","name":"X","category":"design"}"#,
+        )
+        .unwrap();
         assert_eq!(skill.id, "skill-x");
+        assert_eq!(skill.plugin_uuid, "plugin-1");
         assert_eq!(skill.category, "design");
         assert!(skill.is_enabled.is_none());
 

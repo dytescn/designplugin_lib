@@ -16,6 +16,12 @@ target
 # rustc will dump stack traces when hitting an internal compiler error to PWD
 rustc-ice-*.txt
 
+# 本地测试环境
+/.dytes/
+/dytes.lock
+/datasets/
+/designdb/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
