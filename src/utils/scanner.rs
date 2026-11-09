@@ -739,7 +739,9 @@ fn import_skills(plugin_uuid: &str, package: &Path) -> AppResult<i64> {
 ///
 /// - `chat_think` → `chat_think`
 /// - `chat_reply` → `chat_reply`
-/// - `plugins` / `plugins_coreldraw` → `chat_plugin`
+/// - `chat_plugins` → `chat_plugins`（仓库分类，供 `call_chat` 直接检索）
+/// - `sys_plugins` → `sys_plugins`（系统插件分类）
+/// - `plugins` / `plugins_coreldraw` → `chat_plugin`（兼容旧清单）
 ///
 /// kv_lib 未安装时返回 0；已安装但写入失败时返回错误。
 fn import_kv_resources(plugin_uuid: &str, name: &str, package: &Path) -> AppResult<i64> {
@@ -773,7 +775,33 @@ fn import_kv_resources(plugin_uuid: &str, name: &str, package: &Path) -> AppResu
             "reply 阶段检索词与技能",
             20,
         ),
-        "plugins" | "plugins_coreldraw" => import_chat_plugins(plugin_uuid, name, package),
+        "chat_plugins" => import_chat_plugins(
+            plugin_uuid,
+            name,
+            package,
+            "chat_plugins",
+            "聊天插件",
+            "chat_plugins 分类插件的能力描述",
+            30,
+        ),
+        "sys_plugins" => import_chat_plugins(
+            plugin_uuid,
+            name,
+            package,
+            "sys_plugins",
+            "系统插件",
+            "sys_plugins 分类插件的能力描述",
+            40,
+        ),
+        "plugins" | "plugins_coreldraw" => import_chat_plugins(
+            plugin_uuid,
+            name,
+            package,
+            "chat_plugin",
+            "聊天插件",
+            "chat 分类插件的能力描述",
+            30,
+        ),
         _ => Ok(0),
     }
 }
@@ -902,7 +930,15 @@ fn skill_values(package: &Path, name: &str) -> Vec<(String, String)> {
     values
 }
 
-fn import_chat_plugins(plugin_uuid: &str, name: &str, package: &Path) -> AppResult<i64> {
+fn import_chat_plugins(
+    plugin_uuid: &str,
+    name: &str,
+    package: &Path,
+    collection: &str,
+    label: &str,
+    description: &str,
+    sort: i64,
+) -> AppResult<i64> {
     let text = match fs::read_to_string(package.join("mcp.json")) {
         Ok(text) => text,
         Err(_) => return Ok(0),
@@ -961,8 +997,8 @@ fn import_chat_plugins(plugin_uuid: &str, name: &str, package: &Path) -> AppResu
         return Ok(0);
     }
 
-    kv::ensure_collection("chat_plugin", "聊天插件", "chat 分类插件的能力描述", 30)?;
-    kv::replace_records("chat_plugin", &prefix, &items).map(|count| count as i64)
+    kv::ensure_collection(collection, label, description, sort)?;
+    kv::replace_records(collection, &prefix, &items).map(|count| count as i64)
 }
 
 fn sha256_file(path: &Path) -> AppResult<String> {

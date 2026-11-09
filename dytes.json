@@ -1,7 +1,7 @@
 {
   "name": "plugin_lib",
   "uuid": "8b1c9907-692d-473e-8676-459aec1ec6ba",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "design plugin data interface library",
   "keywords": [
     "plugin",
