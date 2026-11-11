@@ -42,13 +42,16 @@ Deno.test("skills 可通过 FFI 完成增删改查", () => {
   const first = skills[0];
   const listed = getSkills({
     plugin_uuid: first.plugin_uuid,
-    with_content: true,
     page_size: 200,
   });
   const expected = skills.filter((s) =>
     s.plugin_uuid === first.plugin_uuid
   ).length;
   assert(listed.total === expected, `按插件查询应返回 ${expected} 条`);
+  assert(
+    !("content" in listed.list[0]),
+    "get_skills 列表只应返回摘要，不应包含 content",
+  );
 
   const updated = patchSkill(first.id, { name: "测试改名", is_enabled: 0 });
   assert(updated.name === "测试改名", "name 未更新");

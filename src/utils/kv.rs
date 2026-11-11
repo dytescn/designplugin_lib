@@ -106,8 +106,17 @@ fn list_values_request(collection: &str, prefix: &str, page: usize) -> Value {
     })
 }
 
-/// 读取 `prefix` 下的记录 key 与 value（prompt 场景中 value 是 content）。
-pub fn list_records(collection: &str, prefix: &str) -> AppResult<Vec<(String, String)>> {
+/// `prefix` 下的记录摘要；`value` 是提示词正文，`rank` / `meta` 用于判断是否需要更新。
+#[derive(Debug, Clone)]
+pub struct KvRecord {
+    pub key: String,
+    pub value: String,
+    pub rank: i64,
+    pub meta: Value,
+}
+
+/// 读取 `prefix` 下的记录 key、value、rank 与 meta。
+pub fn list_records(collection: &str, prefix: &str) -> AppResult<Vec<KvRecord>> {
     let mut records = Vec::new();
     let mut page = 1usize;
     loop {
@@ -127,7 +136,12 @@ pub fn list_records(collection: &str, prefix: &str) -> AppResult<Vec<(String, St
                     Some(value) => value.to_string(),
                     None => String::new(),
                 };
-                records.push((key.to_string(), value));
+                records.push(KvRecord {
+                    key: key.to_string(),
+                    value,
+                    rank: item.get("rank").and_then(Value::as_i64).unwrap_or(0),
+                    meta: item.get("meta").cloned().unwrap_or_else(|| json!({})),
+                });
             }
         }
         let total = data.get("total").and_then(Value::as_i64).unwrap_or(0) as usize;
@@ -137,6 +151,37 @@ pub fn list_records(collection: &str, prefix: &str) -> AppResult<Vec<(String, St
         page += 1;
     }
     Ok(records)
+}
+
+/// 判断 kv 集合是否存在；不存在时返回 `false`，而不是让 list/delete 报错。
+pub fn collection_exists(code: &str) -> AppResult<bool> {
+    let mut page = 1usize;
+    loop {
+        let data = call(
+            "post_kv_collection",
+            json!({
+                "action": "list",
+                "page": page,
+                "page_size": LIST_PAGE_SIZE,
+            }),
+        )?;
+        let list = data
+            .get("list")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if list
+            .iter()
+            .any(|item| item.get("code").and_then(Value::as_str) == Some(code))
+        {
+            return Ok(true);
+        }
+        let total = data.get("total").and_then(Value::as_i64).unwrap_or(0) as usize;
+        if list.is_empty() || page * LIST_PAGE_SIZE >= total {
+            return Ok(false);
+        }
+        page += 1;
+    }
 }
 
 /// 批量写入记录，`items` 使用 kv_lib 的 `{key,value,text,meta,rank,force}` 结构。

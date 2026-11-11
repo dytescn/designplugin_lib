@@ -1,0 +1,20 @@
+{
+  "prompts": [
+    {
+      "id": "layout-advisor",
+      "name": "版式顾问",
+      "content": "根据画布尺寸与目标媒介给出栅格、边距和视觉层级建议，参数带单位。",
+      "category": "design",
+      "sort": 10,
+      "is_enabled": 1
+    },
+    {
+      "id": "export-advisor",
+      "name": "导出顾问",
+      "content": "按用途给出格式、分辨率和色彩空间，提醒出血、透明背景与字体转曲。",
+      "category": "general",
+      "sort": 20,
+      "is_enabled": 1
+    }
+  ]
+}

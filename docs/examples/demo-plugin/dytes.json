@@ -1,0 +1,21 @@
+{
+  "name": "demo_design",
+  "uuid": "6f0d2f3a-4b8c-4d2e-9a71-0c5b8e2d4a10",
+  "version": "1.0.0",
+  "description": "plugin_lib 文档示例：最小可安装的设计插件包",
+  "type": "plugins",
+  "plugins_type": "chat_plugins",
+  "target": "common",
+  "use_ai": 1,
+  "platform-exports": {
+    "windows": {
+      "./target/release/demo_design.dll": "demo_design.dll"
+    },
+    "linux": {
+      "./target/release/libdemo_design.so": "libdemo_design.so"
+    },
+    "macos": {
+      "./target/release/libdemo_design.dylib": "libdemo_design.dylib"
+    }
+  }
+}

@@ -4,11 +4,13 @@
 //! `dytes.json` → plugins 主表，平台库文件，`skills/*.md`、`prompts.json`、
 //! `taskflow.json`、`mcp.json` → designdb / plugin_functions / kv_lib。
 
+use crate::utils::cjson::flag_value;
 use crate::utils::db::{self, quote, PLUGIN_DB};
 use crate::utils::designdb;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::kv;
 use crate::utils::plugin::{self as plugin_ops, PostFunctionReq, UpdateFunctionReq};
+use crate::utils::prompts::validate_prompt_list;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -59,17 +61,21 @@ pub fn install(req: InstallPackageReq) -> AppResult<Value> {
         .unwrap_or("common")
         .to_string();
     let use_ai = flag_value(manifest.get("use_ai")).unwrap_or(0);
-    if let Some((installed_name, installed_version)) = installed_plugin(&uuid)?
-        && compare_versions(&installed_version, &version) != Ordering::Less
-    {
-        return Ok(json!({
-            "plugin_uuid": uuid,
-            "name": installed_name,
-            "version": installed_version,
-            "skipped": true,
-            "reason": "installed version is not lower than package version",
-        }));
-    }
+    let old_plugins_type = match installed_plugin(&uuid)? {
+        Some((installed_name, installed_version, old_type)) => {
+            if compare_versions(&installed_version, &version) != Ordering::Less {
+                return Ok(json!({
+                    "plugin_uuid": uuid,
+                    "name": installed_name,
+                    "version": installed_version,
+                    "skipped": true,
+                    "reason": "installed version is not lower than package version",
+                }));
+            }
+            old_type
+        }
+        None => String::new(),
+    };
 
     let platform = platform_code();
     let lib_file = locate_lib(&manifest, &package, &name)?;
@@ -88,7 +94,7 @@ pub fn install(req: InstallPackageReq) -> AppResult<Value> {
     let _ = record_version(&uuid, &version);
 
     let (skills_added, skills_updated, _) = sync_skills(&package, &uuid, false)?;
-    let prompts = sync_prompts(&package, &uuid, &name, &plugins_type)?;
+    let prompts = sync_prompts(&package, &uuid, &name, &plugins_type, &old_plugins_type)?;
     let (taskflows_added, taskflows_updated, _) = sync_taskflows(&package, &uuid, false)?;
     let (functions_added, functions_updated, _) =
         sync_functions(&package, &uuid, use_ai, false)?;
@@ -121,7 +127,7 @@ pub fn update(req: UpdatePackageReq) -> AppResult<Value> {
         .to_string();
     let manifest_name = require_manifest_text(&manifest, "name")?;
 
-    let (uuid, from_version) = find_installed(
+    let (uuid, from_version, old_plugins_type) = find_installed(
         req.plugin_uuid
             .as_deref()
             .filter(|value| !value.trim().is_empty()),
@@ -185,7 +191,13 @@ pub fn update(req: UpdatePackageReq) -> AppResult<Value> {
 
     let (skills_added, skills_updated, skills_removed) =
         sync_skills(&package, &uuid, prune)?;
-    let prompts = sync_prompts(&package, &uuid, &manifest_name, &plugins_type)?;
+    let prompts = sync_prompts(
+        &package,
+        &uuid,
+        &manifest_name,
+        &plugins_type,
+        &old_plugins_type,
+    )?;
     let (taskflows_added, taskflows_updated, taskflows_removed) =
         sync_taskflows(&package, &uuid, prune)?;
     let (functions_added, functions_updated, functions_removed) =
@@ -418,7 +430,7 @@ fn find_installed(
     name: Option<&str>,
     manifest_uuid: &str,
     manifest_name: &str,
-) -> AppResult<(String, Option<String>)> {
+) -> AppResult<(String, Option<String>, String)> {
     let (field, value) = match (uuid, name) {
         (Some(uuid), _) => ("uuid", uuid),
         (None, Some(name)) => ("name", name),
@@ -429,7 +441,8 @@ fn find_installed(
     let rows = db::query(
         PLUGIN_DB,
         &format!(
-            "SELECT uuid, name, version FROM plugins WHERE {field} = {} AND deleted_at IS NULL LIMIT 1",
+            "SELECT uuid, name, version, plugins_type FROM plugins \
+             WHERE {field} = {} AND deleted_at IS NULL LIMIT 1",
             quote(value)
         ),
     )?;
@@ -447,14 +460,20 @@ fn find_installed(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| current_version(&uuid));
-    Ok((uuid, version))
+    let plugins_type = row
+        .get("plugins_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    Ok((uuid, version, plugins_type))
 }
 
-fn installed_plugin(uuid: &str) -> AppResult<Option<(String, String)>> {
+fn installed_plugin(uuid: &str) -> AppResult<Option<(String, String, String)>> {
     let rows = db::query(
         PLUGIN_DB,
         &format!(
-            "SELECT name, version FROM plugins WHERE uuid = {} AND deleted_at IS NULL LIMIT 1",
+            "SELECT name, version, plugins_type FROM plugins \
+             WHERE uuid = {} AND deleted_at IS NULL LIMIT 1",
             quote(uuid)
         ),
     )?;
@@ -473,7 +492,12 @@ fn installed_plugin(uuid: &str) -> AppResult<Option<(String, String)>> {
         .map(str::to_string)
         .or_else(|| current_version(uuid))
         .unwrap_or_default();
-    Ok(Some((name, version)))
+    let plugins_type = row
+        .get("plugins_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    Ok(Some((name, version, plugins_type)))
 }
 
 fn compare_versions(current: &str, incoming: &str) -> Ordering {
@@ -696,27 +720,69 @@ fn sync_prompts(
     uuid: &str,
     name: &str,
     plugins_type: &str,
+    old_plugins_type: &str,
 ) -> AppResult<usize> {
     let Some(prompts) = read_prompts(package)? else {
+        sync_prompts_without_file(uuid, name, old_plugins_type, plugins_type)?;
         return Ok(0);
     };
+    validate_prompt_list(&prompts)?;
     let count = prompts.len();
     designdb::set_prompts_doc(uuid, prompts.clone())?;
-    sync_prompts_kv(uuid, name, plugins_type, &prompts)?;
+    sync_prompts_kv(uuid, name, old_plugins_type, plugins_type, &prompts)?;
     Ok(count)
 }
+
+/// 新包没有 `prompts.json` 时保留 designdb 中的原提示词；但如果 `plugins_type`
+/// 发生变化，需要把现有提示词迁移到新的 kv 集合，并清理旧集合。
+fn sync_prompts_without_file(
+    uuid: &str,
+    name: &str,
+    old_plugins_type: &str,
+    plugins_type: &str,
+) -> AppResult<()> {
+    if !kv::available() {
+        return Ok(());
+    }
+    let old_code = kv_collection(old_plugins_type).map(|(code, _, _, _)| code);
+    let new_code = kv_collection(plugins_type).map(|(code, _, _, _)| code);
+    if old_code == new_code && old_code.is_some() {
+        return Ok(());
+    }
+
+    let prompts = designdb::get_prompts_doc(uuid)?
+        .and_then(|doc| doc.get("prompts").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    sync_prompts_kv(uuid, name, old_plugins_type, plugins_type, &prompts)?;
+    Ok(())
+}
+
+const KV_COLLECTIONS: &[&str] = &[
+    "chat_think",
+    "chat_reply",
+    "chat_plugins",
+    "sys_plugins",
+    "chat_plugin",
+];
 
 fn sync_prompts_kv(
     uuid: &str,
     name: &str,
+    old_plugins_type: &str,
     plugins_type: &str,
     prompts: &[Value],
 ) -> AppResult<usize> {
     if !kv::available() {
         return Ok(0);
     }
-    let Some((collection, label, description, sort)) = kv_collection(plugins_type) else {
-        return Ok(0);
+
+    let new_collection = kv_collection(plugins_type);
+    let new_code = new_collection.map(|(code, _, _, _)| code);
+    let changed = cleanup_old_prompt_collections(uuid, old_plugins_type, new_code)?;
+
+    let Some((collection, label, description, sort)) = new_collection else {
+        return Ok(changed);
     };
 
     let records: Vec<(String, String)> = prompts
@@ -725,29 +791,48 @@ fn sync_prompts_kv(
             prompt_content(prompt).map(|content| (prompt_key(uuid, prompt, content), content.to_string()))
         })
         .collect();
+    let prefix = format!("{uuid}:prompt:");
+    let collection_exists = kv::collection_exists(collection)?;
+
+    // 空数组也要清理旧记录：与 designdb 的“整体覆盖为空”保持一致。
     if records.is_empty() {
-        return Ok(0);
+        if !collection_exists {
+            return Ok(changed);
+        }
+        let old = kv::list_records(collection, &prefix)?;
+        if old.is_empty() {
+            return Ok(changed);
+        }
+        let keys: Vec<String> = old.into_iter().map(|record| record.key).collect();
+        kv::delete_records(collection, &keys)?;
+        return Ok(changed + keys.len());
     }
 
     kv::ensure_collection(collection, label, description, sort)?;
-    let prefix = format!("{uuid}:prompt:");
     let old = kv::list_records(collection, &prefix)?;
-    let old_map: HashMap<String, String> = old.into_iter().collect();
+    let old_map: HashMap<String, kv::KvRecord> =
+        old.into_iter().map(|record| (record.key.clone(), record)).collect();
     let new_keys: HashSet<&str> = records.iter().map(|(key, _)| key.as_str()).collect();
-    let meta = json!({ "plugin_uuid": uuid, "plugin_name": name, "kind": "prompt" });
 
     let mut items = Vec::new();
     for (index, (key, content)) in records.iter().enumerate() {
-        if old_map.get(key).map(String::as_str) == Some(content.as_str()) {
+        let rank = index as i64 + 1;
+        let old = old_map.get(key);
+        let meta = prompt_meta(uuid, name, old);
+        let unchanged = old.is_some_and(|old| {
+            old.value.as_str() == content.as_str() && old.rank == rank && old.meta == meta
+        });
+        if unchanged {
             continue;
         }
         items.push(json!({
             "key": key,
             "value": content,
             "text": content,
-            "meta": meta.clone(),
-            "rank": index as i64 + 1,
-            "force": true,
+            "meta": meta,
+            "rank": rank,
+            // 只有内容变化时才会重新向量化；rank/meta 变化不触发嵌入。
+            "force": false,
         }));
     }
 
@@ -764,7 +849,57 @@ fn sync_prompts_kv(
         kv::delete_records(collection, &stale)?;
     }
 
-    Ok(items.len() + stale.len())
+    Ok(changed + items.len() + stale.len())
+}
+
+fn cleanup_old_prompt_collections(
+    uuid: &str,
+    old_plugins_type: &str,
+    new_code: Option<&str>,
+) -> AppResult<usize> {
+    let old_code = kv_collection(old_plugins_type).map(|(code, _, _, _)| code);
+    if old_code == new_code && old_code.is_some() {
+        return Ok(0);
+    }
+
+    // 类型变化、旧类型为空或未知时，扫描所有已知集合（排除新集合），
+    // 处理类型切换、删除后重装以及历史残留。
+    let mut changed = 0;
+    for code in KV_COLLECTIONS {
+        if Some(*code) != new_code {
+            changed += cleanup_prompt_collection(uuid, code)?;
+        }
+    }
+    Ok(changed)
+}
+
+fn cleanup_prompt_collection(uuid: &str, collection: &str) -> AppResult<usize> {
+    if !kv::collection_exists(collection)? {
+        return Ok(0);
+    }
+    let prefix = format!("{uuid}:prompt:");
+    let old = kv::list_records(collection, &prefix)?;
+    if old.is_empty() {
+        return Ok(0);
+    }
+    let keys: Vec<String> = old.into_iter().map(|record| record.key).collect();
+    kv::delete_records(collection, &keys)?;
+    Ok(keys.len())
+}
+
+fn prompt_meta(uuid: &str, name: &str, old: Option<&kv::KvRecord>) -> Value {
+    let mut meta = old
+        .map(|record| record.meta.clone())
+        .unwrap_or_else(|| json!({}));
+    if !meta.is_object() {
+        meta = json!({});
+    }
+    if let Some(object) = meta.as_object_mut() {
+        object.insert("plugin_uuid".to_string(), json!(uuid));
+        object.insert("plugin_name".to_string(), json!(name));
+        object.insert("kind".to_string(), json!("prompt"));
+    }
+    meta
 }
 
 fn kv_collection(plugins_type: &str) -> Option<(&'static str, &'static str, &'static str, i64)> {
@@ -1054,22 +1189,54 @@ fn sync_functions(
     Ok((added, updated, removed))
 }
 
-fn flag_value(value: Option<&Value>) -> Option<i64> {
-    match value? {
-        Value::Bool(value) => Some(i64::from(*value)),
-        Value::Number(value) => value.as_i64(),
-        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Some(1),
-            "0" | "false" | "no" | "off" => Some(0),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn prompt_meta_preserves_extra_fields_and_updates_name() {
+        let old = kv::KvRecord {
+            key: "k".to_string(),
+            value: "v".to_string(),
+            rank: 1,
+            meta: json!({
+                "plugin_uuid": "u",
+                "plugin_name": "old",
+                "kind": "prompt",
+                "extra": true
+            }),
+        };
+        let meta = prompt_meta("u", "new", Some(&old));
+        assert_eq!(meta["plugin_uuid"], "u");
+        assert_eq!(meta["plugin_name"], "new");
+        assert_eq!(meta["kind"], "prompt");
+        assert_eq!(meta["extra"], true);
+    }
+
+    #[test]
+    fn prompt_meta_replaces_non_object_meta() {
+        let old = kv::KvRecord {
+            key: "k".to_string(),
+            value: "v".to_string(),
+            rank: 1,
+            meta: json!("not-an-object"),
+        };
+        let meta = prompt_meta("u", "n", Some(&old));
+        assert_eq!(meta["plugin_uuid"], "u");
+        assert_eq!(meta["plugin_name"], "n");
+        assert_eq!(meta["kind"], "prompt");
+    }
+
+    #[test]
+    fn unknown_plugins_type_has_no_kv_collection() {
+        assert!(kv_collection("unknown").is_none());
+    }
 }

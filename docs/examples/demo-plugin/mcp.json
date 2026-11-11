@@ -1,0 +1,39 @@
+{
+  "tools": [
+    {
+      "name": "demo_design_tokens",
+      "ffi_symbol": "demo_design_tokens",
+      "title": "读取设计令牌",
+      "description": "返回当前文档的颜色、字体与间距令牌，供后续布局或导出建议使用。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": ["document", "selection"],
+            "description": "读取范围"
+          }
+        }
+      },
+      "inputExample": {
+        "scope": "document"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "tokens": {
+            "type": "object",
+            "description": "设计令牌集合"
+          }
+        }
+      },
+      "outputExample": {
+        "tokens": {
+          "colors": ["#111111", "#F5F5F5", "#2F80ED"],
+          "spacing": [4, 8, 16, 24, 32]
+        }
+      },
+      "use_ai": 1
+    }
+  ]
+}

@@ -44,9 +44,11 @@ cargo build --release
 - 每个导出函数签名为 `(json_in: *const c_char, json_out: *mut c_char) -> c_int`。
 - `json_in`：请求 JSON 的 C 字符串（以 `\0` 结尾）。
 - `json_out`：调用方提供的输出缓冲区，大小固定 **64 KiB**（`OUT_BUF_SIZE = 65_536`）。
+  这里描述的是**对 plugin_lib 的对外 FFI**；库与库之间（`database` / `kv_lib` / `designdb`）
+  的缓冲区按 [ffi-buffer.md](./ffi-buffer.md) 处理，目标 1024 KiB，不要混用。
 - 返回值：`0` 表示已写入响应；`-1` 表示输出指针为空；`-2` 表示响应超出缓冲区。
 - 响应为 JSON 外壳：`{ "code": 200, "data": {...}, "msg": "success" }`，业务错误时 `code` 非 200。
-- 可调用符号见各 `src/ffi/*.rs` 中的 `pub extern "C" fn`，如 `get_plugins`、`post_plugins`、`get_skills` 等。`Deno.dlopen` 只暴露声明过的符号，测试用到的每个符号都要在 `symbols` 中登记。
+- 可调用符号见各 `src/ffi/*.rs` 中的 `pub extern "C" fn`，如 `get_plugins`、`post_plugins`、`get_skills`、`get_skill` 等。`Deno.dlopen` 只暴露声明过的符号，测试用到的每个符号都要在 `symbols` 中登记。
 
 ### 示例
 

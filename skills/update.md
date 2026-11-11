@@ -11,6 +11,8 @@
 
 - 插件必须已经安装，`plugins` 中存在对应 `uuid`。
 - 新包目录中的 `dytes.json` 必须存在且可解析。
+- 升级包必须满足 [包类型内容规范](../docs/plugin-spec/package-types.md) 的发布要求；
+  安装流程不强制校验这些内容，缺少时只会让对应数据为空或保留旧值。
 - 版本判断：
   - `plugins.version` 不低于 `dytes.json.version`：跳过更新，返回 `skipped: true`。
   - `plugins.version` 低于包版本：执行更新。
@@ -48,6 +50,8 @@
    - 已存在同 `_id` 的技能：更新内容、名称、分类，`version + 1`。
    - 新文件：新增技能。
    - 该插件下、但新包中已不存在的技能：默认删除；可通过 `prune=false` 保留。
+   - 因此 `chat_think` / `chat_reply` 以及 `use_ai = 1` 的 `design_*` 升级包必须继续提供
+     `skills/`，否则技能会被清空且发布不合规。
 
 5. **同步 prompts**
 
@@ -62,15 +66,18 @@
      | `chat_plugins` | `chat_plugins` |
      | `sys_plugins` | `sys_plugins` |
      | `plugins` / `plugins_coreldraw` | `chat_plugin`（兼容旧清单） |
-     | 其他 | 不同步 |
+     | 其他 | 不同步；类型切换时清理其他集合 |
 
    - kv 中每条 prompt 记录保存的是该条目的 `content`：记录的 `value` / `text` 都取 `content`。
    - prompt key 使用 `{plugin_uuid}:prompt:{标识}`，标识优先取条目的 `id`，其次 `name`，最后 `content` 哈希；旧数据使用 `{plugin_uuid}:prompt:{index}` 时需要先按 content 对齐，再迁移到稳定标识。
-   - 更新时先读取该 `plugin_uuid` 前缀下的现有记录，把 kv 中保存的 `content` 与新 prompts 中每个条目的 `content` 对比：
-     - content 未变化：保留原记录，不重写、不重新向量化。
-     - content 修改：更新对应记录的 content。
+   - 更新时先读取该 `plugin_uuid` 前缀下的现有记录，比较 `content`、`rank`、`meta`：
+     - 三者都未变：保留原记录，不重写、不重新向量化。
+     - `content` 变化：更新记录并重新向量化。
+     - 仅 `rank` / `meta` 变化：更新记录，不重新向量化（写入使用 `force: false`）。
      - 新增 content：写入新 key。
      - 旧 content 在新 prompts 中已不存在：从 kv 中删除对应记录。
+   - `prompts.json` 是空数组时，删除该插件在目标集合中的全部记录。
+   - `plugins_type` 切换时，安装 / 更新会读取旧类型并扫描已知集合（排除新集合）清理该插件的记录；新包没有 `prompts.json` 时，会使用 designdb 中已有的提示词迁移到新集合；旧类型为空或未知时同样扫描已知集合。
    - 对比只处理 `{plugin_uuid}:prompt:` 前缀，不影响其他插件或其他类型的记录。
    - `kv_lib` 未安装时跳过该步骤，本地 prompts 仍正常更新；kv 写入失败返回错误，可重试。
 
@@ -85,6 +92,8 @@
    - 按 `uuid` upsert 新包中的 tools。
    - 该插件下、新包中已不存在的 `plugin_functions` 记录默认删除，保证能力列表与包内容一致。
    - `created_at` 保留，`updated_at` 刷新。
+   - `design_*` 升级包必须继续提供 `mcp.json`；缺少文件时保留原能力，但发布不合规。
+     新包 `mcp.json` 存在但 `tools` 为空时，会清理该插件的全部能力。
 
 8. **版本记录**
 

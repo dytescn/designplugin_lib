@@ -196,6 +196,7 @@ pub struct GetSkillsReq {
     #[serde(default)]
     pub enabled: Option<Value>,
     #[serde(default)]
+    /// 已废弃：`get_skills` 只返回摘要；传 `true` 会返回 `400103`，请改用 `get_skill`。
     pub with_content: Option<bool>,
     #[serde(default)]
     pub page: Option<u32>,
@@ -714,9 +715,6 @@ pub fn patch_function(req: PatchFunctionReq) -> AppResult<Value> {
         sets.push(format!("return_example = {}", quote(&value.to_string())));
     }
     if let Some(use_ai) = flag(&req.use_ai) {
-        if !matches!(use_ai, 0 | 1) {
-            return Err(AppError::param("use_ai must be 0 or 1"));
-        }
         sets.push(format!("use_ai = {use_ai}"));
     }
 
@@ -773,6 +771,12 @@ fn skill_summary(doc: &Value) -> Value {
 }
 
 pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
+    if req.with_content == Some(true) {
+        return Err(AppError::param(
+            "get_skills 只返回列表摘要；请先获取 total/id，再调用 get_skill 按 id 获取内容",
+        ));
+    }
+
     let (page, page_size, offset) = page_params(req.page, req.page_size);
     let mut conditions = Vec::new();
 
@@ -826,12 +830,11 @@ pub fn get_skills(req: GetSkillsReq) -> AppResult<Value> {
     });
 
     let total = docs.len();
-    let with_content = req.with_content.unwrap_or(false);
     let list = docs
         .into_iter()
         .skip(offset as usize)
         .take(page_size as usize)
-        .map(|doc| if with_content { doc } else { skill_summary(&doc) })
+        .map(|doc| skill_summary(&doc))
         .collect::<Vec<_>>();
 
     Ok(json!({
@@ -1043,6 +1046,17 @@ mod tests {
         assert_eq!(int_list(&Some(json!([0, 2]))), Some(vec![0, 2]));
         assert_eq!(int_list(&Some(json!("1"))), Some(vec![1]));
         assert_eq!(int_list(&Some(json!([]))), None);
+    }
+
+    #[test]
+    fn get_skills_rejects_with_content() {
+        let req = GetSkillsReq {
+            with_content: Some(true),
+            ..Default::default()
+        };
+        let error = get_skills(req).unwrap_err();
+        assert_eq!(error.code, 400103);
+        assert!(error.msg.contains("get_skill"));
     }
 
     #[test]

@@ -10,11 +10,20 @@
 <package>/
 ├── dytes.json          # 必填，插件清单
 ├── <lib>.dll|.so|.dylib
-├── skills/*.md         # 可选，技能
+├── skills/*.md         # 按类型：chat_think、chat_reply 必须；design_* 且 use_ai=1 必须
 ├── prompts.json        # 可选，提示词
-├── taskflow.json       # 可选，任务流
-└── mcp.json            # 可选，MCP 能力
+├── taskflow.json       # 按类型：chat_plugins 必须
+└── mcp.json            # 按类型：design_* 必须；chat_* 可选；其他可选
 ```
+
+> 发布层面的内容要求：
+> - `plugins_type` 为 `chat_think` / `chat_reply` 时必须带 `skills/`（至少一个有效 `.md`），
+>   `chat_plugins` 时必须带 `taskflow.json`（至少一个元素）；`mcp.json` 对三者可选；
+> - `plugins_type` 以 `design_` 开头时必须带 `mcp.json`；`design_*` 且 `use_ai = 1` 时
+>   必须带 `skills/`。
+>
+> 安装流程本身不校验这些内容，缺少时只是对应数据为空。详见
+> [包类型内容规范](../docs/plugin-spec/package-types.md)。
 
 ##### 前置校验
 
@@ -83,7 +92,7 @@
      - `prompts`：数组原样保存。
    - 重复安装时整体覆盖，不保留旧数组中的元素。
 
-   写入 designdb 后，如果 `kv_lib` 可用，再按 `plugins_type` 把 prompts 同步到对应 kv 分类；kv 记录保存每个条目的 `content`。首次安装视为全量写入，已存在的同 key 记录按 content 对比结果更新（规则见 `update.md`）。
+   写入 designdb 后，如果 `kv_lib` 可用，再按 `plugins_type` 把 prompts 同步到对应 kv 分类；kv 记录保存每个条目的 `content`。首次安装视为全量写入，已存在的同 key 记录按 `content` / `rank` / `meta` 对比结果更新；空数组会清理该插件的旧记录，类型切换会清理其他集合（规则见 `update.md`）。
 
 5. **录入 taskflow**
 

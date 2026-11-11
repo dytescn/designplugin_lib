@@ -80,19 +80,28 @@ where
 }
 
 /// 把 JSON 的 bool / number / string 归一成 0/1。
+///
+/// 只有 `1`、`true`、`"1"`、`"true"`、`"yes"`、`"on"`（以及数值 `1.0`）视为开启；
+/// 其他已提供的值一律为 `0`。字段缺失或显式 `null` 返回 `None`，
+/// 便于部分更新区分“未提供”和“显式关闭”。
+pub fn flag_value(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    let enabled = match value {
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64() == Some(1.0),
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Value::Null => return None,
+        _ => false,
+    };
+    Some(i64::from(enabled))
+}
+
+/// 兼容旧调用方的引用参数形式，语义与 [`flag_value`] 一致。
 pub fn flag(value: &Option<Value>) -> Option<i64> {
-    let v = value.as_ref()?;
-    match v {
-        Value::Bool(b) => Some(i64::from(*b)),
-        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| i64::from(f != 0.0))),
-        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Some(1),
-            "0" | "false" | "no" | "off" => Some(0),
-            _ => None,
-        },
-        Value::Null => None,
-        _ => None,
-    }
+    flag_value(value.as_ref())
 }
 
 #[cfg(test)]
@@ -114,9 +123,25 @@ mod tests {
     #[test]
     fn flag_accepts_bool_number_and_string() {
         assert_eq!(flag(&Some(json!(true))), Some(1));
+        assert_eq!(flag(&Some(json!(false))), Some(0));
+        assert_eq!(flag(&Some(json!(1))), Some(1));
+        assert_eq!(flag(&Some(json!(1.0))), Some(1));
         assert_eq!(flag(&Some(json!(0))), Some(0));
+        assert_eq!(flag(&Some(json!(2))), Some(0));
+        assert_eq!(flag(&Some(json!(-1))), Some(0));
+        assert_eq!(flag(&Some(json!(1.5))), Some(0));
+        assert_eq!(flag(&Some(json!("1"))), Some(1));
+        assert_eq!(flag(&Some(json!("true"))), Some(1));
+        assert_eq!(flag(&Some(json!("yes"))), Some(1));
+        assert_eq!(flag(&Some(json!("on"))), Some(1));
         assert_eq!(flag(&Some(json!("false"))), Some(0));
+        assert_eq!(flag(&Some(json!("2"))), Some(0));
+        assert_eq!(flag(&Some(json!([]))), Some(0));
+        assert_eq!(flag(&Some(json!({}))), Some(0));
         assert_eq!(flag(&Some(json!(null))), None);
+        assert_eq!(flag(&None), None);
+        assert_eq!(flag_value(None), None);
+        assert_eq!(flag_value(Some(&json!(null))), None);
     }
 
     #[test]

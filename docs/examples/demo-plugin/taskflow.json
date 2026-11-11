@@ -1,0 +1,12 @@
+[
+  {
+    "uid": "demo-design-layout-check",
+    "name": "版式检查",
+    "desc": "检查栅格、边距与对齐是否符合当前项目规范"
+  },
+  {
+    "uid": "demo-design-export-check",
+    "name": "导出检查",
+    "desc": "按目标媒介检查格式、分辨率与色彩空间"
+  }
+]

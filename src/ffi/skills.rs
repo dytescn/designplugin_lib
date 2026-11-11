@@ -2,15 +2,22 @@
 
 use crate::utils::cjson::with_input;
 use crate::utils::plugin::{
-    self, DeleteSkillReq, GetSkillsReq, PostSkillReq, UpdateSkillReq,
+    self, DeleteSkillReq, GetSkillReq, GetSkillsReq, PostSkillReq, UpdateSkillReq,
 };
 use std::ffi::{c_char, c_int};
 
-/* input: {categories?, ids?, plugin_uuid?, enabled?, with_content?, page?, page_size?}
-   output: {list, total, page, page_size} */
+/* input: {categories?, ids?, plugin_uuid?, enabled?, page?, page_size?}
+   output: {list, total, page, page_size}，只返回摘要，不含 content */
 #[unsafe(no_mangle)]
 pub extern "C" fn get_skills(json_in: *const c_char, json_out: *mut c_char) -> c_int {
     with_input::<GetSkillsReq, _>(json_in, json_out, plugin::get_skills)
+}
+
+/* input: {id（必填）}
+   output: 完整技能文档（含 content） */
+#[unsafe(no_mangle)]
+pub extern "C" fn get_skill(json_in: *const c_char, json_out: *mut c_char) -> c_int {
+    with_input::<GetSkillReq, _>(json_in, json_out, plugin::get_skill)
 }
 
 /* input: {id（必填）, plugin_uuid（必填）, name（必填）, category（必填）, description?,

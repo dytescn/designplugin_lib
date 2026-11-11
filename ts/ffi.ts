@@ -17,6 +17,7 @@ const libUrl = new URL(`../.dytes/libary/${libName}`, import.meta.url);
 
 const dylib = Deno.dlopen(libUrl, {
   get_skills: { parameters: ["pointer", "pointer"], result: "i32" },
+  get_skill: { parameters: ["pointer", "pointer"], result: "i32" },
   post_skills: { parameters: ["pointer", "pointer"], result: "i32" },
   update_skills: { parameters: ["pointer", "pointer"], result: "i32" },
   patch_skills: { parameters: ["pointer", "pointer"], result: "i32" },
@@ -95,7 +96,6 @@ export function getSkills(
     categories?: string[];
     ids?: string[];
     enabled?: boolean | number;
-    with_content?: boolean;
     page?: number;
     page_size?: number;
   } = {},
@@ -104,12 +104,7 @@ export function getSkills(
 }
 
 export function getSkill(id: string): Skill {
-  const result = getSkills({ ids: [id], with_content: true, page_size: 1 });
-  const skill = result.list[0];
-  if (!skill) {
-    throw new Error(`技能不存在: ${id}`);
-  }
-  return skill;
+  return unwrap<Skill>("get_skill", { id });
 }
 
 export function postSkill(skill: Skill): Skill {
@@ -184,11 +179,7 @@ export function importSkills(skills: Skill[]): {
   let updated = 0;
 
   for (const skill of skills) {
-    const existing = getSkills({
-      ids: [skill.id],
-      with_content: true,
-      page_size: 1,
-    }).list[0];
+    const existing = getSkills({ ids: [skill.id], page_size: 1 }).list[0];
 
     if (existing) {
       updateSkill(skill.id, skill);
