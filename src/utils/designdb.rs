@@ -21,8 +21,8 @@ const DESIGNDB_LIB: &str = "./libary/libdesigndb.so";
 #[cfg(target_os = "macos")]
 const DESIGNDB_LIB: &str = "./libary/libdesigndb.dylib";
 
-/// 与 designdb 的 `write_json_out` 保持一致。
-const OUT_BUF_SIZE: usize = 65536;
+/// 与 designdb 1.0.3 的 `write_json_out` 保持一致（单次响应上限 16 MiB）。
+const OUT_BUF_SIZE: usize = 16 * 1024 * 1024;
 
 pub const SKILLS_PATH: &str = "skills";
 pub const SKILLS_COLLECTION: &str = "skills";
@@ -32,7 +32,7 @@ pub const TASKFLOW_PATH: &str = "taskflow";
 pub const TASKFLOW_COLLECTION: &str = "taskflow";
 pub const TASKFLOW_ID: &str = "taskflow";
 
-/// designdb 单次响应上限 64 KiB，分页扫描时取 20 条留出余量。
+/// designdb 1.0.3 单次响应上限 16 MiB；20 条为保守分页。
 const SCAN_PAGE_SIZE: u64 = 20;
 
 type FfiFn = unsafe extern "C" fn(*const c_char, *mut c_char) -> c_int;

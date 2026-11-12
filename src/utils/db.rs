@@ -4,14 +4,17 @@
 //! `path` 是库名，实际文件为 `./database/<name>.db`。
 
 /// 插件库名；`database` 服务中对应 `./database/plugins.db`。
-pub const PLUGIN_DB: &str = "./plugins";
+/// database 1.0.5+ 的逻辑库名只允许 `[A-Za-z0-9_-]`。
+pub const PLUGIN_DB: &str = "plugins";
 
-use crate::utils::cjson::OUT_BUF_SIZE;
 use crate::utils::error::{AppError, AppResult};
 use libloading::{Library, Symbol};
 use once_cell::sync::OnceCell;
 use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char, c_int};
+
+/// database 1.0.5+ 约定 `json_out` 至少 1 MiB。
+const DB_OUT_BUF_SIZE: usize = 1024 * 1024;
 
 type DbFn = unsafe extern "C" fn(*const c_char, *mut c_char) -> c_int;
 
@@ -62,7 +65,7 @@ fn call(symbol: &str, db: &str, sql: &str) -> AppResult<Value> {
     let request = CString::new(request.to_string())
         .map_err(|_| AppError::param("sql 包含非法 NUL 字符"))?;
 
-    let mut out = vec![0u8; OUT_BUF_SIZE];
+    let mut out = vec![0u8; DB_OUT_BUF_SIZE];
     // SAFETY: 入参为 NUL 结尾的 JSON，出参缓冲区长度满足 cyctron 约定。
     let ret = unsafe { func(request.as_ptr(), out.as_mut_ptr() as *mut c_char) };
 
@@ -101,22 +104,22 @@ fn rows(value: &Value) -> Vec<Value> {
 
 /// 查询，返回行数组。
 pub fn query(db: &str, sql: &str) -> AppResult<Vec<Value>> {
-    Ok(rows(&call("post_db_query", db, sql)?))
+    Ok(rows(&call("db_query", db, sql)?))
 }
 
 /// 执行写语句（INSERT / CREATE / ALTER / DROP）。
 pub fn execute(db: &str, sql: &str) -> AppResult<()> {
-    call("post_db_insert", db, sql).map(|_| ())
+    call("db_insert", db, sql).map(|_| ())
 }
 
 /// 执行 UPDATE。
 pub fn update(db: &str, sql: &str) -> AppResult<()> {
-    call("post_db_update", db, sql).map(|_| ())
+    call("db_update", db, sql).map(|_| ())
 }
 
 /// 执行 DELETE。
 pub fn delete(db: &str, sql: &str) -> AppResult<()> {
-    call("post_db_delete", db, sql).map(|_| ())
+    call("db_delete", db, sql).map(|_| ())
 }
 
 /// SQL 字符串字面量：转义单引号并加引号。
